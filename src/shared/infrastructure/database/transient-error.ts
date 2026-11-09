@@ -40,10 +40,11 @@ export function isTransientInfrastructureError(error: unknown): boolean {
   const { code, message } = error as { code?: unknown; message?: unknown };
   if (typeof code === 'string' && (TRANSIENT_SQLSTATES.has(code) || TRANSIENT_NODE_CODES.has(code)))
     return true;
-  // pg pool: "timeout exceeded when trying to connect"; pg: "Connection terminated unexpectedly"
+  // pg pool: "timeout exceeded when trying to connect"; pg: "Connection terminated unexpectedly",
+  // "Connection terminated due to connection timeout", "Query read timeout" (query_timeout)
   return (
     typeof message === 'string' &&
-    /timeout exceeded when trying to connect|connection terminated/i.test(message)
+    /timeout exceeded when trying to connect|connection terminated|query read timeout/i.test(message)
   );
 }
 

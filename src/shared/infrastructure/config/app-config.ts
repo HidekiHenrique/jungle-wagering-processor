@@ -16,6 +16,10 @@ export interface AppConfig {
     readonly name: string;
     readonly poolMax: number;
     readonly lockTimeoutMs: number;
+    /** Max time to get a connection (new or from the pool). */
+    readonly connectTimeoutMs: number;
+    /** Max time for any single query, enforced by the client: covers a server that stops answering. */
+    readonly queryTimeoutMs: number;
   };
   readonly pendingReference: {
     readonly baseDelayMs: number;
@@ -120,6 +124,8 @@ export function loadConfig(env: Env): AppConfig {
       name: str('DB_NAME'),
       poolMax: int('DB_POOL_MAX', 1, 200),
       lockTimeoutMs: int('DB_LOCK_TIMEOUT_MS', 1, 60_000),
+      connectTimeoutMs: intOr('DB_CONNECT_TIMEOUT_MS', 5_000, 100, 60_000),
+      queryTimeoutMs: intOr('DB_QUERY_TIMEOUT_MS', 15_000, 100, 300_000),
     },
     pendingReference: {
       baseDelayMs: int('PENDING_REFERENCE_BASE_DELAY_MS', 1, 3_600_000),
@@ -150,6 +156,9 @@ export function loadConfig(env: Env): AppConfig {
     },
   };
 
+  if (config.database.queryTimeoutMs <= config.database.lockTimeoutMs) {
+    problems.push('DB_QUERY_TIMEOUT_MS must be greater than DB_LOCK_TIMEOUT_MS (a lock wait is a query)');
+  }
   if (problems.length > 0) throw new InvalidConfigError(problems);
   return config;
 }

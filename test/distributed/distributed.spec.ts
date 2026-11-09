@@ -292,3 +292,49 @@ describe('restart (test 8)', () => {
     { timeout: 90_000 },
   );
 });
+
+describe('PostgreSQL temporarily unavailable (challenge §3)', () => {
+  const compose = (action: 'pause' | 'unpause') =>
+    Bun.spawn(['docker', 'compose', action, 'postgres'], {
+      cwd: `${import.meta.dir}/../..`,
+      stdout: 'ignore',
+      stderr: 'ignore',
+    }).exited;
+
+  it(
+    'requests fail fast with 503 while the database is frozen, and the same resend succeeds after it returns',
+    async () => {
+      const instance = await start('db-outage', {
+        ...WORKERS_ON,
+        DB_QUERY_TIMEOUT_MS: '2000',
+        DB_CONNECT_TIMEOUT_MS: '1000',
+        DB_LOCK_TIMEOUT_MS: '500',
+      });
+      const owner = await openWallet(instance, '10.00');
+      const bet = wager(owner, { money: brl('1.00') });
+
+      await compose('pause');
+      try {
+        const startedAt = Date.now();
+        expect(await postWager(instance, bet)).toBe(503);
+        expect(Date.now() - startedAt).toBeLessThan(6_000); // bounded by the query timeout, not hanging
+        expect((await fetch(`${instance.baseUrl}/health/ready`)).status).toBe(503);
+        expect((await fetch(`${instance.baseUrl}/health/live`)).status).toBe(200);
+      } finally {
+        await compose('unpause');
+      }
+
+      await waitFor(async () => (await fetch(`${instance.baseUrl}/health/ready`)).ok, 15_000, 200);
+      expect(await postWager(instance, bet)).toBe(201); // nothing was committed during the outage
+      expect(await postWager(instance, bet)).toBe(200); // and now it is a replay
+      await waitFor(queueDrained, 15_000, 200);
+      expect(await consistency()).toEqual({
+        divergent: 0,
+        unsettled: 0,
+        unpublished: 0,
+        duplicatedEntries: 0,
+      });
+    },
+    { timeout: 60_000 },
+  );
+});

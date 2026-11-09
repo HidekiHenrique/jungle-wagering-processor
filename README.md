@@ -12,7 +12,7 @@ Decisões técnicas: [ARCHITECTURE.md](ARCHITECTURE.md).
 - **Idempotência persistente**: `Idempotency-Key` + hash SHA-256 de JSON canônico; replay devolve o resultado original; HTTP e SQS compartilham o mesmo use case.
 - **Mensageria resiliente**: inbox, transactional outbox com `SKIP LOCKED`, retry com backoff, DLQ, shutdown gracioso.
 - **Referências fora de ordem**: `PENDING_REFERENCE` com worker, backoff e rejeição explícita.
-- **Provado por testes reais**: 157 unitários, 93 de integração (Postgres + SQS em containers, sem mocks de infraestrutura) e 4 cenários com processos reais (3 instâncias, `kill -9`, reinício).
+- **Provado por testes reais**: 158 unitários, 93 de integração (Postgres + SQS em containers, sem mocks de infraestrutura) e 5 cenários com processos reais (3 instâncias, `kill -9`, reinício, Postgres indisponível).
 
 ## Início rápido
 
@@ -50,6 +50,7 @@ cp .env.example .env      # valores padrão já funcionam com o docker-compose
 | `DB_USER` / `DB_PASSWORD` / `DB_NAME` | `wagering` | credenciais e banco |
 | `DB_POOL_MAX` | `10` | conexões máximas por instância |
 | `DB_LOCK_TIMEOUT_MS` | `5000` | espera máxima pelo lock de uma wallet (depois: erro transitório) |
+| `DB_CONNECT_TIMEOUT_MS` / `DB_QUERY_TIMEOUT_MS` | `5000` / `15000` | opcionais; limitam conexão e query (o de query deve ser maior que o de lock) |
 | `PENDING_REFERENCE_BASE_DELAY_MS` | `2000` | primeiro intervalo de reprocessamento de referência ausente |
 | `PENDING_REFERENCE_MAX_DELAY_MS` | `300000` | teto do backoff |
 | `PENDING_REFERENCE_MAX_ATTEMPTS` | `10` | tentativas antes de `REFERENCE_NOT_FOUND` |

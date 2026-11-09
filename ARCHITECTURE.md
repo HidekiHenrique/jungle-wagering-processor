@@ -287,6 +287,7 @@ O README pede que toda interpretação adicional seja documentada (§7). Todas a
 
 - Isolamento **READ COMMITTED** (padrão do Postgres): a correção vem de locks de linha e constraints únicas, não de retries de SERIALIZABLE.
 - `SET LOCAL lock_timeout` (`DB_LOCK_TIMEOUT_MS`): espera por lock é limitada e vira erro transitório em vez de fila infinita.
+- Timeouts do driver `pg` (`DB_CONNECT_TIMEOUT_MS`, `DB_QUERY_TIMEOUT_MS`, este aplicado no cliente **e** como `statement_timeout`): com o banco congelado ou inacessível, a requisição falha em segundos com 503 em vez de travar. O timeout de query precisa ser maior que o de lock (validado no boot), porque uma espera por lock é uma query. Achado na revisão final: sem eles, uma requisição ficou presa por mais de 40 s com o Postgres pausado.
 - Nada de rede dentro da transação; eventos só vão para a tabela outbox.
 
 ### 7.4 Processamento de uma transação
@@ -529,6 +530,7 @@ Processos reais e independentes (`Bun.spawn('bun src/main.ts')`), cada um com HT
 | **3 instâncias** (teste 4): 5 wallets × 30 BETs, cada BET enviada **duas vezes**, por HTTP (a uma instância qualquer) e por SQS | 20 débitos por wallet, 10 rejeições, saldo 0.00, nenhuma divergência; os logs mostram que mais de uma instância consumiu |
 | 80/80 em **processos diferentes** | um 201 e um 422; saldo 20.00 |
 | **`kill -9`** durante a carga (teste 5) | as mensagens que o processo morto segurava reaparecem depois do visibility timeout e são processadas por outro; as 90 BETs aplicadas exatamente uma vez; DLQ vazia |
+| **Postgres indisponível** (README §3): `docker compose pause postgres` com a instância rodando | 503 em ~2 s (não trava), readiness 503 e liveness 200; depois do `unpause`, o mesmo reenvio dá 201 e o seguinte 200 (replay); tudo consistente |
 | **reinício** (teste 8): processo sem workers commita ROLLBACK pendente + BET + eventos e morre com `kill -9`; um novo processo sobe | o ROLLBACK é resolvido, a outbox esvazia, o saldo volta a 100.00; o SIGTERM do sobrevivente executa os hooks de shutdown |
 
 Ao final de cada cenário, uma verificação global em **todas** as wallets: saldo = soma do ledger, nenhuma transação `PENDING`, outbox vazia, nenhum lançamento duplicado.
@@ -539,6 +541,7 @@ Lição dos testes: "fila vazia" se mede por `ApproximateNumberOfMessages + NotV
 
 | README do desafio | Implementação (§ deste documento) | Prova (teste) |
 |---|---|---|
+| §3 Postgres/SQS indisponíveis | 503 + `Retry-After`, retry de mensagem e de publicação, readiness; timeouts do driver | `distributed.spec` (Postgres pausado), `observability.spec` (SQS fora), `messaging.spec` (falha de publicação) |
 | §5.1 dinheiro sem `number` | `Money` com `bigint`; colunas `numeric(20,2)` hidratadas como string | `money.spec`; HTTP 400 para `amount` numérico |
 | §5.2 idempotência sem cache em memória | constraints únicas + inbox no Postgres | `wager-concurrency.spec` (50×), `messaging.spec` |
 | §5.3 não confiar só no FIFO | inbox por `messageId` do corpo + unicidade da transação | redelivery com outro dedup id |

@@ -47,6 +47,12 @@ describe('loadConfig', () => {
     }
   });
 
+  it('requires the query timeout to exceed the lock timeout', () => {
+    expect(() =>
+      loadConfig({ ...validEnv, DB_LOCK_TIMEOUT_MS: '5000', DB_QUERY_TIMEOUT_MS: '5000' }),
+    ).toThrow('DB_QUERY_TIMEOUT_MS must be greater than DB_LOCK_TIMEOUT_MS');
+  });
+
   it('rejects out-of-range ports', () => {
     expect(() => loadConfig({ ...validEnv, DB_PORT: '70000' })).toThrow(
       'DB_PORT must be between 1 and 65535',

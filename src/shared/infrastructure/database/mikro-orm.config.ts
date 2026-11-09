@@ -18,6 +18,14 @@ export function buildOrmOptions(config: AppConfig): Options {
     password: config.database.password,
     dbName: config.database.name,
     pool: { min: 0, max: config.database.poolMax },
+    // Passed to the `pg` Pool. Without them a frozen or unreachable database makes requests hang
+    // forever instead of failing fast with a transient error (503 / message retry).
+    driverOptions: {
+      connectionTimeoutMillis: config.database.connectTimeoutMs,
+      query_timeout: config.database.queryTimeoutMs, // client side: works even if the server is frozen
+      statement_timeout: config.database.queryTimeoutMs, // server side: frees the backend too
+      keepAlive: true,
+    },
     entities: [],
     discovery: { warnWhenNoEntities: false },
     // Every unit of work must run in an explicit, forked context (request, message or job).
