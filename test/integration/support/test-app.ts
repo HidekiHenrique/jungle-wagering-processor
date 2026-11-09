@@ -79,3 +79,18 @@ export async function ledgerInvariant(app: TestApp, walletId: string) {
   );
   return { stored: row?.stored, rebuilt: row?.rebuilt, entries: Number(row?.entries) };
 }
+
+type Sql = <T = Record<string, unknown>>(query: string, params?: unknown[]) => Promise<T[]>;
+
+/**
+ * Challenge §13: "invariante final de todos os testes: wallet.balance == saldo reconstruído pelo
+ * ledger". Ids of every wallet in the database where it does not hold (expected: none).
+ */
+export async function inconsistentWallets(sql: Sql): Promise<string[]> {
+  const rows = await sql<{ id: string }>(
+    `SELECT w.id FROM wallets w
+      WHERE w.balance <> COALESCE((SELECT SUM(CASE e.direction WHEN 'CREDIT' THEN e.amount ELSE -e.amount END)
+                                     FROM wallet_ledger_entries e WHERE e.wallet_id = w.id), 0)`,
+  );
+  return rows.map((r) => r.id);
+}

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { createHttpTestApp, type HttpTestApp } from './support/http-app';
-import { uuid } from './support/test-app';
+import { inconsistentWallets, uuid } from './support/test-app';
 
 let api: HttpTestApp;
 
@@ -11,6 +11,7 @@ beforeAll(async () => {
   api = await createHttpTestApp();
 });
 afterAll(async () => {
+  expect(await inconsistentWallets(api.sql)).toEqual([]);
   await api.close();
   process.env = savedEnv;
 });

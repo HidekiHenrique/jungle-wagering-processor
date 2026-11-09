@@ -10,7 +10,14 @@ import { WagerTransactionStatus as Status } from '../../src/modules/wagering/dom
 import { WalletNotFoundError } from '../../src/modules/wallets/application/errors';
 import { WalletAlreadyExistsError } from '../../src/modules/wallets/application/ports/wallet.repository';
 import { InvalidMoneyError } from '../../src/shared/domain/money';
-import { createTestApp, ledgerInvariant, type TestApp, uuid, wagerCommand } from './support/test-app';
+import {
+  createTestApp,
+  inconsistentWallets,
+  ledgerInvariant,
+  type TestApp,
+  uuid,
+  wagerCommand,
+} from './support/test-app';
 
 let app: TestApp;
 
@@ -18,6 +25,7 @@ beforeAll(async () => {
   app = await createTestApp();
 });
 afterAll(async () => {
+  expect(await inconsistentWallets(app.sql)).toEqual([]);
   await app.close();
 });
 
@@ -268,16 +276,17 @@ describe('atomicity', () => {
     );
     try {
       const playerId = uuid();
-      // Opening also writes to the outbox, so create the wallet directly.
+      // Opening also writes to the outbox, so create the (empty, hence consistent) wallet directly.
       const walletId = uuid();
       await failing.sql(
         `INSERT INTO wallets (id, player_id, currency, balance, version, created_at, updated_at)
-         VALUES (?, ?, 'BRL', 100.00, 1, now(), now())`,
+         VALUES (?, ?, 'BRL', 0.00, 1, now(), now())`,
         [walletId, playerId],
       );
       const command = wagerCommand({
         walletId,
         playerId,
+        kind: 'WIN', // a credit: the ledger write happens, then the outbox fails
         inbox: { consumerName: 'wager-transactions', messageId: `msg-${uuid()}`, payloadHash: 'h' },
       });
 
@@ -287,7 +296,7 @@ describe('atomicity', () => {
         'SELECT balance::text AS balance, version FROM wallets WHERE id = ?',
         [walletId],
       );
-      expect(wallet).toEqual({ balance: '100.00', version: 1 });
+      expect(wallet).toEqual({ balance: '0.00', version: 1 });
       expect(
         await failing.sql('SELECT 1 FROM wallet_ledger_entries WHERE wallet_id = ?', [walletId]),
       ).toHaveLength(0);

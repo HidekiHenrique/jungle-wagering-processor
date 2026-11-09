@@ -1,8 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { createHttpTestApp, type HttpTestApp } from './support/http-app';
-import { uuid } from './support/test-app';
+import { inconsistentWallets, uuid } from './support/test-app';
 
 let api: HttpTestApp;
+const corruptedWallets: string[] = [];
 
 const originalLockTimeout = process.env.DB_LOCK_TIMEOUT_MS;
 
@@ -11,6 +12,8 @@ beforeAll(async () => {
   api = await createHttpTestApp();
 });
 afterAll(async () => {
+  // Only the wallet corrupted on purpose by the reconciliation test may diverge.
+  expect(await inconsistentWallets(api.sql)).toEqual(corruptedWallets);
   await api.close();
   process.env.DB_LOCK_TIMEOUT_MS = originalLockTimeout;
 });
@@ -271,6 +274,7 @@ describe('POST /wallets/:id/reconciliation', () => {
   it('flags a divergence and does not fix it', async () => {
     const owner = await openWallet('100.00');
     await api.sql('UPDATE wallets SET balance = 90.00 WHERE id = ?', [owner.walletId]); // simulated corruption
+    corruptedWallets.push(owner.walletId);
 
     const res = await api.request('POST', `/wallets/${owner.walletId}/reconciliation`);
 

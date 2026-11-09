@@ -1,7 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { FailureCode } from '../../src/modules/wagering/domain/failure-code';
 import { WagerTransactionStatus as Status } from '../../src/modules/wagering/domain/wager-transaction-status';
-import { createTestApp, ledgerInvariant, type TestApp, uuid, wagerCommand } from './support/test-app';
+import {
+  createTestApp,
+  inconsistentWallets,
+  ledgerInvariant,
+  type TestApp,
+  uuid,
+  wagerCommand,
+} from './support/test-app';
 
 /**
  * Real concurrency: every operation runs in its own transaction on its own pooled connection,
@@ -13,6 +20,7 @@ beforeAll(async () => {
   app = await createTestApp();
 });
 afterAll(async () => {
+  expect(await inconsistentWallets(app.sql)).toEqual([]);
   await app.close();
 });
 

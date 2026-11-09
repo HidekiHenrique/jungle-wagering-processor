@@ -24,7 +24,7 @@ import { METRICS, type Metrics } from '../../src/shared/application/metrics.port
 import { APP_CONFIG, type AppConfig } from '../../src/shared/infrastructure/config/app-config';
 import { createHttpTestApp, type HttpTestApp } from './support/http-app';
 import { createTestQueues, type TestQueues, waitFor } from './support/sqs-test-queues';
-import { uuid } from './support/test-app';
+import { inconsistentWallets, uuid } from './support/test-app';
 
 /**
  * Messaging end to end on real Postgres + real SQS (MiniStack). Each suite gets its own queues:
@@ -48,6 +48,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await consumer.stop();
+  expect(await inconsistentWallets(api.sql)).toEqual([]);
   await api.close();
   await queues.destroy();
   process.env = savedEnv;

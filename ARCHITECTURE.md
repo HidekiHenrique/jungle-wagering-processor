@@ -1,6 +1,6 @@
 # Arquitetura — Distributed Wagering Processor
 
-> Documento vivo: cada etapa acrescenta suas decisões. Seções marcadas com *(Etapa N)* ainda não foram implementadas.
+> Decisões técnicas, trade-offs e limitações da solução. Os números de seção do README do desafio aparecem como "README §N" em [§12](#12-rastreabilidade-readme--implementação--prova).
 
 ## 1. Visão geral
 
@@ -16,7 +16,7 @@ flowchart LR
   API -->|outbox relay| E[(wallet-events.fifo)]
 ```
 
-## 2. Stack e decisões de fundação (Etapa 1)
+## 2. Stack e decisões de fundação
 
 | Item | Escolha | Motivo |
 |---|---|---|
@@ -52,13 +52,13 @@ Consequência prática: a regra `useImportType` do Biome fica **desligada**. Ela
 - Registradas explicitamente em `migrations/index.ts` (`migrationsList`), sem glob de arquivos: comportamento idêntico em dev, testes e produção.
 - Executadas por `src/shared/infrastructure/database/migrate.ts` em vez da CLI do MikroORM (que tenta detectar ts-node/tsx); um script de ~40 linhas é mais previsível no Bun.
 - Cada migration roda em transação (`transactional`, `allOrNothing`).
-- Baseline: função `forbid_mutation()`, que será ligada ao ledger por trigger na Etapa 3. Teste de integração cobre `up → down → up` e a mensagem de erro da trigger.
+- Baseline: função `forbid_mutation()`, ligada ao ledger por trigger na migration do schema principal. Teste de integração cobre `up → down → up` e a mensagem de erro da trigger.
 
 ### 2.4 Conexão com o banco
 
 `allowGlobalContext: false`: qualquer uso do EntityManager fora de um contexto (requisição, mensagem, job) lança erro, evitando Identity Map compartilhado entre operações. O módulo Nest registra o contexto por requisição HTTP; consumers e workers farão `fork()` explícito.
 
-O MikroORM 7 abre o pool de forma preguiçosa (na primeira query). A app sobe mesmo com o Postgres indisponível; quem informa se o banco está acessível é o readiness *(Etapa 7)*.
+O MikroORM 7 abre o pool de forma preguiçosa (na primeira query). A app sobe mesmo com o Postgres indisponível; quem informa se o banco está acessível é o readiness (§11.3).
 
 ### 2.5 Configuração e ambientes
 
@@ -85,14 +85,14 @@ flowchart LR
 
 Camadas por módulo: `domain` (sem Nest/ORM/HTTP/SQS) ← `application` (use cases e ports) ← `infrastructure` / `presentation`.
 
-## 4. Observabilidade (Etapa 1: base)
+## 4. Logs e contexto de correlação
 
 - `JsonLogger` implementa o `LoggerService` do Nest: classes usam `new Logger(Nome.name)` e cada chamada vira uma linha JSON com `timestamp`, `level`, `context`, `message` e campos estruturados.
 - `LogContext` em `AsyncLocalStorage` propaga `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId` para todas as linhas de um mesmo fluxo, sem passar parâmetros; fluxos concorrentes ficam isolados (testado).
 - `CorrelationIdMiddleware` reaproveita `X-Correlation-Id` válido do chamador ou gera um UUIDv7, e devolve no header da resposta.
 - Chaves sensíveis (`password`, `secret`, `token`, `authorization`, `cookie`, `api-key`) são mascaradas em qualquer profundidade. Payloads financeiros completos não são logados por regra de código, não por filtro.
 
-## 5. Modelo de domínio (Etapa 2)
+## 5. Modelo de domínio
 
 Todo o domínio é TypeScript puro: nenhum import de NestJS, MikroORM, Express, SQS ou de camadas externas. O teste `test/unit/architecture/domain-purity.spec.ts` falha se isso mudar.
 
@@ -225,12 +225,26 @@ Contrato: valores nunca são renomeados nem reutilizados. Rejeição é final pa
 
 ## 6. Ambiguidades resolvidas
 
-Decisões A1–A16 da análise inicial (registradas no `CLAUDE.md`, §6–§11), mais as tomadas na Etapa 2:
+O README pede que toda interpretação adicional seja documentada (§7). Todas as adotadas:
 
 | # | Questão | Decisão |
 |---|---|---|
 | A1 | REFUND e ROLLBACK da mesma BET | uma referência só é revertida **uma vez, por qualquer tipo**; o segundo vira `REFERENCE_ALREADY_REVERSED` (senão a BET seria creditada duas vezes) |
 | A2 | Valor de LOSS | `amount >= 0`; não exige zero |
+| A3 | WIN com referência | opcional; se vier, é validada como as demais e pode ficar PENDING_REFERENCE |
+| A4 | Referência existe mas não está PROCESSED | REJECTED/FAILED → `REFERENCE_NOT_PROCESSED`; ainda pendente → continua PENDING_REFERENCE |
+| A5 | Escopo da idempotency key | por provider: `UNIQUE (provider_id, idempotency_key)` |
+| A6 | Key diferente, mesma `(provider, externalTransactionId)` | 409 `EXTERNAL_TRANSACTION_CONFLICT`, não replay (o header é a fonte da verdade) |
+| A7 | Campos do `payloadHash` | os de negócio, com `money` normalizado; fora: key, `messageId`, `occurredAt` (§7.6) |
+| A8 | Wallet inexistente | 422 `WALLET_NOT_FOUND` sem persistir; wallet de outro player → REJECTED persistido |
+| A9 | Status HTTP | tabela §8.2 |
+| A10 | Quando usar FAILED | só com registro persistido e falha permanente (retry de referência com erro não transitório) |
+| A11 | Limite de PENDING_REFERENCE | 10 tentativas, backoff 2 s → 5 min (~18,5 min), §10.3 |
+| A12 | OPENING publica `WalletBalanceChanged`? | sim (o saldo vai de 0 a X); saldo inicial 0 não gera OPENING |
+| A13 | Destino da outbox | `wallet-events.fifo`, `MessageGroupId = walletId`, `MessageDeduplicationId = eventId` |
+| A14 | "Testes de arredondamento" | Money não arredonda: mais de 2 casas é rejeitado, e o teste prova a rejeição |
+| A15 | Cursor do ledger | identity `sequence` em base64url versionado, mais recentes primeiro |
+| A16 | Autenticação | não implementada; ponto de extensão + desenho com Keycloak (§8.5) |
 | A17 | WIN com valor `0.00` | aceito e PROCESSED sem lançamento e sem mudar `version`. O README não trata valor zero; a tabela do §7 diz "WIN: 1 entrada CREDIT", mas um crédito de zero não move saldo, e o §6.4 diz que operações sem efeito no saldo não geram lançamento. Rejeitar recusaria mensagens possivelmente legítimas ("win 0" como rodada sem prêmio é prática comum de mercado, não regra do README) |
 | A18 | LOSS com referência | permitida, apontando para a BET da rodada (como WIN) |
 | A19 | BET com referência | inválida (400): BET abre a rodada, não referencia nada |
@@ -238,7 +252,7 @@ Decisões A1–A16 da análise inicial (registradas no `CLAUDE.md`, §6–§11),
 | A21 | Valor zero | BET zero é inválida (400): geraria lançamento vazio. REFUND/ROLLBACK zero são aceitos como payload e rejeitados pela regra 5 (`REFERENCE_AMOUNT_MISMATCH`), ficando auditáveis |
 | A22 | Replay de rejeição por wallet de outro player | não devolve saldo |
 
-## 7. Persistência, transações e concorrência (Etapa 3)
+## 7. Persistência, transações e concorrência
 
 ### 7.1 Schema e garantias no banco
 
@@ -321,7 +335,7 @@ sequenceDiagram
 - Replay devolve o resultado gravado na própria transação (`status`, `failure_code`, `balance_after`), ou seja, o saldo observado naquele momento.
 - A inbox deduplica a **mensagem**; a proteção **financeira** entre canais (HTTP × SQS) é a unicidade da transação.
 
-## 8. API HTTP (Etapa 4)
+## 8. API HTTP
 
 ### 8.1 Camadas na prática
 
@@ -375,7 +389,7 @@ Desenho com IdP externo (Keycloak):
 3. O guard rejeita token ausente ou inválido (401), e o controller exige `body.providerId === provider autenticado` (403), impedindo um provedor de operar em nome de outro.
 4. Health continua aberto; mensagens SQS são canal interno confiável, mas o `providerId` da mensagem passa pelas mesmas validações de domínio.
 
-## 9. Mensageria (Etapa 5)
+## 9. Mensageria
 
 ### 9.1 Visão geral
 
@@ -430,7 +444,7 @@ Cada passada, numa transação: `SELECT … FOR UPDATE SKIP LOCKED` (lote penden
 
 Não existe exactly-once entre Postgres e SQS. O que o sistema garante: **efeito financeiro exatamente uma vez** (constraints e inbox) e **eventos ao menos uma vez**, com identificador estável para deduplicar.
 
-## 10. Referências fora de ordem (Etapa 6)
+## 10. Referências fora de ordem
 
 ### 10.1 Fluxo
 
@@ -468,7 +482,7 @@ Padrão: base 2 s, teto 300 s, 10 tentativas (`PENDING_REFERENCE_*`). Verificaç
 
 Justificativa: a desordem normal (paralelismo da fila, reenvio do provedor) se resolve em milissegundos ou segundos, e o wake-up nem espera o backoff. As tentativas seguintes cobrem provedores que reenviam com o próprio backoff de alguns minutos. Depois de ~18 min, a referência muito provavelmente nunca vai chegar, e manter a transação pendente só esconde o problema; a rejeição explícita leva o provedor a reconciliar. Os valores são configuráveis por ambiente.
 
-## 11. Observabilidade e recuperação distribuída (Etapa 7)
+## 11. Observabilidade e recuperação distribuída
 
 ### 11.1 Logs
 
@@ -521,7 +535,78 @@ Ao final de cada cenário, uma verificação global em **todas** as wallets: sal
 
 Lição dos testes: "fila vazia" se mede por `ApproximateNumberOfMessages + NotVisible`, nunca por `ReceiveMessage`, que não vê as mensagens em voo (inclusive as de um processo morto) e ainda as tira de quem deveria processá-las.
 
-## 12. Seções pendentes
+## 12. Rastreabilidade: README → implementação → prova
 
-- Modelo de domínio e Money *(Etapa 2)*
-- Failure codes, trade-offs, ambiguidades resolvidas e limitações *(contínuo)*
+| README do desafio | Implementação (§ deste documento) | Prova (teste) |
+|---|---|---|
+| §5.1 dinheiro sem `number` | `Money` com `bigint`; colunas `numeric(20,2)` hidratadas como string | `money.spec`; HTTP 400 para `amount` numérico |
+| §5.2 idempotência sem cache em memória | constraints únicas + inbox no Postgres | `wager-concurrency.spec` (50×), `messaging.spec` |
+| §5.3 não confiar só no FIFO | inbox por `messageId` do corpo + unicidade da transação | redelivery com outro dedup id |
+| §5.4 evento só após commit | outbox na mesma transação; relay publica depois | `messaging.spec` (relay), atomicidade |
+| §5.5 ledger imutável | triggers `forbid_mutation()`; entidade congelada | `schema-constraints.spec`, `wallet-ledger-entry.spec` |
+| §5.6 sem lock global | lock por linha da wallet | wallets em paralelo |
+| §5.7 sem read→calculate→update | `FOR NO KEY UPDATE` + `version` + `CHECK` | 80/80, rajada; teste por mutação (§7.5) |
+| §5.8 múltiplas instâncias | estado só no Postgres/SQS; `SKIP LOCKED` | `distributed.spec` (3 processos) |
+| §5.9 garantias no schema | §7.1 | `schema-constraints.spec` |
+| §6.0 factories/`rehydrate` | construtores privados; mappers usam `rehydrate` | testes de domínio |
+| §6.1 Money | §5.2 | `money.spec` |
+| §6.2 Wallet | §5.3 | `wallet.spec` |
+| §6.3 WagerTransaction e transições | §5.4 | `wager-transaction.spec` |
+| §6.4 LedgerEntry | §5.3 | `wallet-ledger-entry.spec` |
+| §6.5 Inbox/Outbox | §5.8, §9 | `inbox-outbox.spec`, `messaging.spec` |
+| §7 regras de negócio | `settleWager` (§5.5) | `settle-wager.spec`, `wager-processing.spec` |
+| §7.1 referências fora de ordem | worker + wake-up (§10) | `pending-references.spec` |
+| §7.2 failure codes | §5.6 | todos os de regra |
+| §8 concorrência e cenário 80/80 | §7.5 | `wager-concurrency.spec`, `distributed.spec` |
+| §9 API e status | §8 | `http-api.spec` (27 casos e2e) |
+| §9 reconciliação | §8.4 | `http-api.spec` (consistente e divergente) |
+| §9 health | §11.3 | `observability.spec` |
+| §10 SQS | §9 | `messaging.spec`, `sqs-poller.spec` |
+| §11 outbox e eventos | §9.4, §5.7 | `messaging.spec`, `events.spec` |
+| §12 observabilidade | §11 | `observability.spec`, `json-logger.spec` |
+| §13 testes 1–8 | — | 1, 2, 3: `wager-concurrency`; 4, 5, 8: `distributed`; 5 (determinístico): `messaging`; 6: `messaging` (2 relays); 7: `pending-references` |
+| §13 invariante final em todos os testes | `inconsistentWallets()` no `afterAll` de cada suíte de integração e verificação global nos distribuídos | falha a suíte se qualquer wallet divergir |
+
+## 13. Adaptações em relação aos esqueletos do README
+
+O README permite adaptar nomes e assinaturas "desde que as garantias sejam preservadas". Adaptações feitas:
+
+- `Wallet.open()` devolve `{ wallet, openingEntry? }`: o lançamento OPENING nasce junto com a wallet, e não existe wallet com saldo sem lançamento.
+- `markProcessed({ at, balanceAfter, referenceTransactionId })`: grava o saldo observado, necessário para o replay (regra 7).
+- `markPendingReference(now, policy)` e `reject(code, { at, balanceAfter? })`: o agendamento do retry e o saldo observado são estado da própria transação.
+- `OutboxMessage.scheduleRetry(now, policy = padrão)`: a política de backoff é injetável.
+- Leituras de tempo e ids vêm de quem chama (`Clock`, `IdGenerator`); o domínio é determinístico.
+
+## 14. Segurança
+
+- **SQL**: todo valor externo vai por parâmetro (`?`). As três interpolações existentes são um inteiro validado na config (`lock_timeout`), placeholders gerados pelo código e um fragmento estático.
+- **Entrada**: DTOs com `forbidNonWhitelisted`; `Money.from` rejeita qualquer formato fora do contrato; ids com tamanho máximo; corpo HTTP limitado ao padrão do Express (100 kB); `limit` do ledger ≤ 200.
+- **Erros**: 500 responde só `INTERNAL_ERROR`; detalhes ficam no log.
+- **Logs**: chaves sensíveis mascaradas; payloads financeiros completos não são logados.
+- **Isolamento de dados**: a regra `WALLET_PLAYER_MISMATCH` não devolve saldo de terceiros, nem no replay.
+- **Dependências**: versões fixas, `bun.lock` versionado; `bun audit` sem vulnerabilidades conhecidas na entrega.
+- **Lacuna consciente**: sem autenticação (A16), os GET não são restritos ao provedor dono da wallet, e `/metrics` fica aberto. O desenho que fecha isso está em §8.5.
+
+## 15. Trade-offs
+
+| Escolha | Ganho | Custo |
+|---|---|---|
+| Lock pessimista por wallet | correção simples sob disputa, sem tempestade de retries | throughput de uma wallet muito disputada é serial; `lock_timeout` limita a espera |
+| Records + mappers em vez de mapear o domínio no ORM | domínio limpo, `rehydrate` sempre usado | um mapper por entidade; sem change tracking automático |
+| SQL explícito em pontos críticos | lock mínimo e `ON CONFLICT` sem alvo | dois lugares fora da API do ORM |
+| Insert-first com PENDING + trigger diferido | duplicatas esperam no índice, não na wallet | um estado transitório a mais (protegido pelo banco) |
+| Relay publica dentro da transação da outbox | `SKIP LOCKED` simples e correto | a transação dura o tempo do `SendMessageBatch` (só trava linhas da outbox) |
+| At-least-once nos eventos | sem coordenação distribuída | consumidores precisam deduplicar por `eventId` |
+| MiniStack | sem conta/token para quem avalia | emulador; a fidelidade é verificada por teste |
+| Shutdown espera o long poll | nenhuma mensagem presa no shutdown | shutdown leva até `SQS_WAIT_TIME_SECONDS` |
+
+## 16. Limitações conhecidas
+
+- **Autenticação** não implementada (decisão A16), com ponto de extensão e desenho documentados.
+- **Ordem global dos eventos** entre relays concorrentes não é garantida; por wallet, os consumidores usam `walletVersion`.
+- **Wallet muito disputada**: o processamento é serial por wallet. Escalar exigiria particionar o saldo (sub-wallets) ou agrupar operações, ambos fora de escopo.
+- **Ledger de partida simples**: partidas dobradas é opcional no README e não foi implementado; cada lançamento tem `balance_before` e `balance_after`, e a reconciliação recompõe o saldo.
+- **Moeda**: modelo multimoeda com escala fixa de 2 casas (como o README define). Moedas com outra escala (JPY, BHD) exigiriam escala por moeda.
+- **Retenção**: inbox e outbox crescem sem limpeza; em produção, um job removeria registros publicados ou processados há mais de N dias.
+- **Sem dashboard nem OpenTelemetry** (opcionais); as métricas Prometheus e os alertas sugeridos estão em §11.2.
+- **Sem teste de carga** (`test:load`, diferencial opcional).

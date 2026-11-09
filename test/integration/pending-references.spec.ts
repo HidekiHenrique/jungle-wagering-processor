@@ -3,7 +3,14 @@ import { ProcessPendingReferencesUseCase } from '../../src/modules/wagering/appl
 import { WagerSettlementService } from '../../src/modules/wagering/application/wager-settlement.service';
 import { FailureCode } from '../../src/modules/wagering/domain/failure-code';
 import { WagerTransactionStatus as Status } from '../../src/modules/wagering/domain/wager-transaction-status';
-import { createTestApp, ledgerInvariant, type TestApp, uuid, wagerCommand } from './support/test-app';
+import {
+  createTestApp,
+  inconsistentWallets,
+  ledgerInvariant,
+  type TestApp,
+  uuid,
+  wagerCommand,
+} from './support/test-app';
 
 /**
  * Out-of-order references (challenge §7.1, test 7) on the real database. Backoff shrunk to
@@ -21,6 +28,7 @@ beforeAll(async () => {
   pending = app.get<ProcessPendingReferencesUseCase>(ProcessPendingReferencesUseCase);
 });
 afterAll(async () => {
+  expect(await inconsistentWallets(app.sql)).toEqual([]);
   await app.close();
   process.env = savedEnv;
 });

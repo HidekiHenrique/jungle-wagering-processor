@@ -4,7 +4,26 @@ Solução do [desafio backend da Jungle Gaming](docs/CHALLENGE.md): serviço fin
 
 Decisões técnicas: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-> Em desenvolvimento por etapas. Concluídas: **1 — Fundação**, **2 — Domínio**, **3 — Núcleo transacional**, **4 — API HTTP**, **5 — Mensageria**, **6 — Referências pendentes**, **7 — Observabilidade e recuperação distribuída**.
+## Destaques
+
+- **Dinheiro exato**: `Money` em `bigint` de centavos, sem `number` em lugar nenhum; entradas fora do contrato são rejeitadas, nunca arredondadas.
+- **Garantias no banco**: unicidade, não-negatividade, imutabilidade do ledger e aritmética dos lançamentos são constraints e triggers do PostgreSQL.
+- **Concorrência**: lock por wallet (`FOR NO KEY UPDATE`), `version` e `CHECK`; nenhum lock global; correto com N instâncias.
+- **Idempotência persistente**: `Idempotency-Key` + hash SHA-256 de JSON canônico; replay devolve o resultado original; HTTP e SQS compartilham o mesmo use case.
+- **Mensageria resiliente**: inbox, transactional outbox com `SKIP LOCKED`, retry com backoff, DLQ, shutdown gracioso.
+- **Referências fora de ordem**: `PENDING_REFERENCE` com worker, backoff e rejeição explícita.
+- **Provado por testes reais**: 157 unitários, 93 de integração (Postgres + SQS em containers, sem mocks de infraestrutura) e 4 cenários com processos reais (3 instâncias, `kill -9`, reinício).
+
+## Início rápido
+
+```bash
+bun install
+cp .env.example .env
+bun run infra:up          # Postgres + MiniStack + filas
+bun run migration:up
+bun run start             # http://localhost:3000
+bun run test:all          # unitários + integração + distribuídos
+```
 
 ## Stack
 
@@ -107,6 +126,21 @@ bun scripts/send-wager-message.ts <walletId> <playerId> BET 30.00
 # ledger e reconciliação
 curl 'localhost:3000/wallets/<walletId>/ledger?limit=50'
 curl -X POST localhost:3000/wallets/<walletId>/reconciliation
+```
+
+## Estrutura
+
+```
+src/
+  shared/            shared kernel (Money, eventos, ports) e infraestrutura comum (config, logs, banco, métricas)
+  modules/
+    wallets/         Wallet, ledger, consultas, reconciliação
+    wagering/        WagerTransaction, regras de liquidação, use cases de escrita, HTTP e consumer SQS
+    messaging/       inbox, outbox, poller SQS, relay (sem regra financeira)
+    health/          liveness, readiness, /metrics
+  presentation/      filtro de erros e pipeline HTTP (raiz de composição)
+migrations/          SQL versionado e reversível
+test/unit|integration|distributed
 ```
 
 ## Testes e qualidade
