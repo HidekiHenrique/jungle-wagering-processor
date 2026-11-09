@@ -30,6 +30,19 @@ export interface AppConfig {
     readonly wagerQueue: string;
     readonly wagerDlq: string;
     readonly eventsQueue: string;
+    /** Long-polling wait per ReceiveMessage (0-20s). */
+    readonly waitTimeSeconds: number;
+    /** Backoff for transient failures: visibility = min(base * 2^(receiveCount-1), max). */
+    readonly retryBaseDelaySeconds: number;
+    readonly retryMaxDelaySeconds: number;
+  };
+  readonly workers: {
+    readonly consumerEnabled: boolean;
+    readonly outboxRelayEnabled: boolean;
+    readonly outboxPollIntervalMs: number;
+    readonly outboxBatchSize: number;
+    /** Max time to finish in-flight work on SIGTERM before giving messages back. */
+    readonly shutdownTimeoutMs: number;
   };
 }
 
@@ -73,6 +86,17 @@ export function loadConfig(env: Env): AppConfig {
     return value;
   };
 
+  /** Operational knobs have safe defaults; connection settings do not. */
+  const intOr = (key: string, fallback: number, min: number, max: number): number =>
+    env[key]?.trim() ? int(key, min, max) : fallback;
+
+  const boolOr = (key: string, fallback: boolean): boolean => {
+    const raw = env[key]?.trim();
+    if (!raw) return fallback;
+    if (raw !== 'true' && raw !== 'false') problems.push(`${key} must be true or false, got "${raw}"`);
+    return raw === 'true';
+  };
+
   const oneOf = <T extends string>(key: string, allowed: readonly T[]): T => {
     const raw = str(key);
     if (raw && !(allowed as readonly string[]).includes(raw)) {
@@ -107,6 +131,16 @@ export function loadConfig(env: Env): AppConfig {
       wagerQueue: str('SQS_WAGER_QUEUE'),
       wagerDlq: str('SQS_WAGER_DLQ'),
       eventsQueue: str('SQS_EVENTS_QUEUE'),
+      waitTimeSeconds: intOr('SQS_WAIT_TIME_SECONDS', 10, 0, 20),
+      retryBaseDelaySeconds: intOr('SQS_RETRY_BASE_DELAY_SECONDS', 1, 1, 900),
+      retryMaxDelaySeconds: intOr('SQS_RETRY_MAX_DELAY_SECONDS', 60, 1, 43_200),
+    },
+    workers: {
+      consumerEnabled: boolOr('SQS_CONSUMER_ENABLED', true),
+      outboxRelayEnabled: boolOr('OUTBOX_RELAY_ENABLED', true),
+      outboxPollIntervalMs: intOr('OUTBOX_POLL_INTERVAL_MS', 500, 10, 60_000),
+      outboxBatchSize: intOr('OUTBOX_BATCH_SIZE', 50, 1, 500),
+      shutdownTimeoutMs: intOr('SHUTDOWN_TIMEOUT_MS', 20_000, 100, 120_000),
     },
   };
 

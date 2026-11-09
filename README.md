@@ -4,7 +4,7 @@ Solução do [desafio backend da Jungle Gaming](docs/CHALLENGE.md): serviço fin
 
 Decisões técnicas: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-> Em desenvolvimento por etapas. Concluídas: **1 — Fundação**, **2 — Domínio**, **3 — Núcleo transacional**, **4 — API HTTP**.
+> Em desenvolvimento por etapas. Concluídas: **1 — Fundação**, **2 — Domínio**, **3 — Núcleo transacional**, **4 — API HTTP**, **5 — Mensageria**.
 
 ## Stack
 
@@ -41,7 +41,9 @@ cp .env.example .env      # valores padrão já funcionam com o docker-compose
 | `SQS_WAGER_DLQ` | `wager-transactions-dlq.fifo` | dead letter queue |
 | `SQS_EVENTS_QUEUE` | `wallet-events.fifo` | destino dos eventos da outbox |
 
-Testes usam `.env.test`, que troca o banco para `wagering_test`.
+Opcionais (com padrão): `SQS_WAIT_TIME_SECONDS` (10), `SQS_RETRY_BASE_DELAY_SECONDS` (1), `SQS_RETRY_MAX_DELAY_SECONDS` (60), `SQS_CONSUMER_ENABLED` (true), `OUTBOX_RELAY_ENABLED` (true), `OUTBOX_POLL_INTERVAL_MS` (500), `OUTBOX_BATCH_SIZE` (50), `SHUTDOWN_TIMEOUT_MS` (20000, deve ser maior que o long poll).
+
+Testes usam `.env.test`: banco `wagering_test` e workers desligados (cada teste de mensageria cria filas próprias e liga o que precisa).
 
 ## Infraestrutura
 
@@ -96,6 +98,9 @@ curl -X POST localhost:3000/wagering/transactions -H 'content-type: application/
        "walletId":"<walletId>","roundId":"round-987","gameId":"fortune-chimp","kind":"BET",
        "money":{"amount":"25.00","currency":"BRL"}}'
 # → 201 {"transactionId":"…","status":"PROCESSED","balance":{"amount":"975.00","currency":"BRL"},"idempotentReplay":false}
+
+# mesma operação pela fila (o consumer roda dentro da aplicação)
+bun scripts/send-wager-message.ts <walletId> <playerId> BET 30.00
 
 # ledger e reconciliação
 curl 'localhost:3000/wallets/<walletId>/ledger?limit=50'

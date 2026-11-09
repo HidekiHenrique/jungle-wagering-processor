@@ -303,4 +303,5 @@ Ao fim de cada etapa, atualizar `docs/STUDY-NOTES.md` (local, fora do git): deci
 - Etapa 2 — Domínio: concluída e commitada (2026-11-09).
 - Etapa 3 — Núcleo transacional: concluída e commitada (2026-11-09).
 - Etapa 4 — API HTTP: concluída e commitada (2026-11-09).
-- Próxima: **5 — Mensageria** (não iniciar sem autorização).
+- Etapa 5 — Mensageria: concluída e commitada (2026-11-09).
+- Próxima: **6 — Referências pendentes** (não iniciar sem autorização).

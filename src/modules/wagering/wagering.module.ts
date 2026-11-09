@@ -14,6 +14,7 @@ import { MikroOrmWagerTransactionRepository } from './infrastructure/persistence
 import { WagerTransactionRecordSchema } from './infrastructure/persistence/wager-transaction.record';
 import { WagerTransactionsController } from './presentation/http/wager-transactions.controller';
 import { WalletOpeningController } from './presentation/http/wallet-opening.controller';
+import { WagerTransactionConsumer } from './presentation/sqs/wager-transaction.consumer';
 
 @Module({
   imports: [
@@ -33,7 +34,8 @@ import { WalletOpeningController } from './presentation/http/wallet-opening.cont
     ProcessWagerTransactionUseCase,
     OpenWalletUseCase,
     GetWagerTransactionUseCase,
+    WagerTransactionConsumer,
   ],
-  exports: [ProcessWagerTransactionUseCase, OpenWalletUseCase],
+  exports: [ProcessWagerTransactionUseCase, OpenWalletUseCase, WagerTransactionConsumer],
 })
 export class WageringModule {}

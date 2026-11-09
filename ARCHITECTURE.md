@@ -375,10 +375,64 @@ Desenho com IdP externo (Keycloak):
 3. O guard rejeita token ausente ou inválido (401), e o controller exige `body.providerId === provider autenticado` (403), impedindo um provedor de operar em nome de outro.
 4. Health continua aberto; mensagens SQS são canal interno confiável, mas o `providerId` da mensagem passa pelas mesmas validações de domínio.
 
-## 9. Seções pendentes
+## 9. Mensageria (Etapa 5)
+
+### 9.1 Visão geral
+
+```mermaid
+flowchart LR
+  P[Provedor] -->|SendMessage<br/>group = walletId| Q[(wager-transactions.fifo)]
+  Q -->|ReceiveMessage| C[WagerTransactionConsumer<br/>todas as instâncias]
+  C -->|mesmo use case do HTTP| U[ProcessWagerTransaction]
+  U -->|1 transação SQL| DB[(inbox + transação + wallet<br/>+ ledger + outbox)]
+  C -.->|inválida: na hora| DLQ[(wager-transactions-dlq.fifo)]
+  Q -.->|maxReceiveCount| DLQ
+  DB --> R[OutboxRelay<br/>todas as instâncias]
+  R -->|SendMessageBatch<br/>dedup = eventId| E[(wallet-events.fifo)]
+```
+
+Messaging é infraestrutura genérica: `SqsQueuePoller` (receber, entregar ao handler, aplicar a decisão), `OutboxRelay`, inbox/outbox. O consumer de apostas é um adaptador de entrada de `wagering` (`presentation/sqs`), ao lado do controller HTTP, e chama o **mesmo** `ProcessWagerTransactionUseCase`.
+
+### 9.2 Consumer: classificação de erros
+
+| Resultado | Decisão | Por quê |
+|---|---|---|
+| Processada, replay, REJECTED, PENDING_REFERENCE | **ack** (DeleteMessage) | o resultado está commitado |
+| `WALLET_NOT_FOUND`, conflitos de idempotência | **ack** | resposta de negócio final; reprocessar não muda nada |
+| JSON inválido, contrato inválido (inclui OPENING), `INVALID_MONEY` | **DLQ imediata**, com `deadLetterReason` | nunca vai dar certo; não gasta tentativas |
+| Transitório (lock timeout, deadlock, banco ou rede) | **sem ack**; `ChangeMessageVisibility` = `min(base·2^(n−1), max)` s, com n = `ApproximateReceiveCount` | pode dar certo depois |
+| Inesperado (bug) | igual ao transitório | limitado por `maxReceiveCount`; depois o SQS move para a DLQ (redrive) |
+
+- **Ack só depois do commit**: o handler retorna a decisão depois que a transação SQL terminou.
+- **Inbox** por `(consumerName, messageId)`, com o `messageId` do **corpo** (estável entre reenvios), na mesma transação: redelivery vira replay.
+- **FIFO**: mensagens do mesmo `MessageGroupId` (wallet) em ordem; grupos diferentes em paralelo. É otimização: a correção vem do lock e das constraints.
+- Logs de cada mensagem carregam `correlationId`, `messageId`, `providerId` e `walletId` (`runWithLogContext`).
+
+### 9.3 Shutdown gracioso (SIGTERM)
+
+`enableShutdownHooks()` → `beforeApplicationShutdown` do consumer e do relay:
+1. para de iniciar novos `ReceiveMessage`;
+2. **não aborta** o long poll em andamento: o SQS pode já ter entregue mensagens àquela requisição, e abortar do lado do cliente as deixaria invisíveis, sem processamento, até o visibility timeout (bug encontrado nos testes). O poll termina (≤ `SQS_WAIT_TIME_SECONDS`) e o que ele trouxer é devolvido com visibilidade 0;
+3. mensagens em processamento terminam (commit + ack); as que ainda não começaram voltam para a fila na hora (visibilidade 0), para outra instância pegar;
+4. limite `SHUTDOWN_TIMEOUT_MS` (padrão 20 s, maior que o long poll de 10 s). Se estourar, o que sobrar reaparece depois do visibility timeout e é deduplicado pela inbox.
+
+### 9.4 Outbox relay
+
+Cada passada, numa transação: `SELECT … FOR UPDATE SKIP LOCKED` (lote pendente e vencido) → `SendMessageBatch` → `published_at` ou `attempts`/`next_attempt_at` (backoff de `OutboxMessage.scheduleRetry`) → COMMIT.
+
+- **SKIP LOCKED**: relays concorrentes pegam lotes disjuntos; ninguém espera, ninguém duplica (teste com 2 relays e 60 eventos: cada um publicado exatamente uma vez, os dois relays trabalharam).
+- A transação trava **só linhas da outbox**, nunca wallets; publicar dentro dela não bloqueia operações financeiras.
+- **Crash depois do envio e antes do COMMIT**: as linhas voltam a pendentes e são republicadas. Entrega **at-least-once**: o `MessageDeduplicationId = eventId` descarta duplicatas por 5 min na fila FIFO, e consumidores deduplicam pelo `eventId`.
+- `MessageGroupId = walletId`: eventos de uma wallet em ordem para o consumidor. Com relays concorrentes, a ordem global entre lotes não é garantida; consumidores usam `walletVersion` (em `WalletBalanceChanged`) para ordenar ou descartar eventos velhos.
+- Falha de publicação nunca descarta o evento: tentativas sem limite, com backoff de até 1 min.
+
+### 9.5 Garantia de entrega
+
+Não existe exactly-once entre Postgres e SQS. O que o sistema garante: **efeito financeiro exatamente uma vez** (constraints e inbox) e **eventos ao menos uma vez**, com identificador estável para deduplicar.
+
+## 10. Seções pendentes
 
 - Modelo de domínio e Money *(Etapa 2)*
-- Inbox, outbox, mensageria e shutdown *(Etapa 5)*
 - Referências pendentes *(Etapa 6)*
 - Métricas, health e recuperação distribuída *(Etapa 7)*
 - Failure codes, trade-offs, ambiguidades resolvidas e limitações *(contínuo)*

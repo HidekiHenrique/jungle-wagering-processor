@@ -13,6 +13,8 @@ export interface HttpTestApp {
   sql<T = Record<string, unknown>>(query: string, params?: unknown[]): Promise<T[]>;
   /** Runs `fn` while another transaction holds `SELECT ... FOR UPDATE` on that row. */
   withRowLock<T>(table: string, id: string, fn: () => Promise<T>): Promise<T>;
+  /** Any provider of the application (use cases, consumer, relay, ...). */
+  get<T>(token: unknown): T;
   close(): Promise<void>;
 }
 
@@ -54,6 +56,7 @@ export async function createHttpTestApp(): Promise<HttpTestApp> {
         await em.execute(`SELECT id FROM ${table} WHERE id = ? FOR UPDATE`, [id]);
         return fn();
       }),
+    get: <T>(token: unknown) => moduleRef.get(token as never) as T,
     close: () => app.close(),
   };
 }
