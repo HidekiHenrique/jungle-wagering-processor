@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { CLOCK, type Clock } from '../../../../shared/application/clock.port';
 import { ID_GENERATOR, type IdGenerator } from '../../../../shared/application/id-generator.port';
+import { METRICS, type Metrics } from '../../../../shared/application/metrics.port';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -56,6 +57,7 @@ export class ProcessPendingReferencesUseCase {
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
     @Inject(TRANSIENT_ERROR_CLASSIFIER) private readonly errors: TransientErrorClassifier,
+    @Inject(METRICS) private readonly metrics: Metrics,
     private readonly settlement: WagerSettlementService,
   ) {}
 
@@ -83,6 +85,7 @@ export class ProcessPendingReferencesUseCase {
       } catch (error) {
         if (this.errors.isTransient(error)) {
           run.transientFailures++;
+          this.metrics.retryScheduled('pending-reference');
           this.logger.warn({
             msg: 'Pending reference retry failed; will retry',
             transactionId: candidate.id,
@@ -107,6 +110,7 @@ export class ProcessPendingReferencesUseCase {
       await this.settlement.settle(transaction, wallet, {
         correlationId: this.ids.next(),
         causationId: transaction.id,
+        channel: 'pending-reference',
         now,
       });
       return transaction.status;

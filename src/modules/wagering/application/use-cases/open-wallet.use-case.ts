@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { CLOCK, type Clock } from '../../../../shared/application/clock.port';
 import { ID_GENERATOR, type IdGenerator } from '../../../../shared/application/id-generator.port';
+import { METRICS, type Metrics } from '../../../../shared/application/metrics.port';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -58,6 +59,7 @@ export class OpenWalletUseCase {
     @Inject(OUTBOX_REPOSITORY) private readonly outbox: OutboxRepository,
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   async execute(command: OpenWalletCommand): Promise<OpenWalletResult> {
@@ -99,6 +101,7 @@ export class OpenWalletUseCase {
       ]);
     });
 
+    if (opening) this.metrics.transactionSettled(opening.status, opening.kind, 'internal');
     return {
       id: wallet.id,
       playerId: wallet.playerId,

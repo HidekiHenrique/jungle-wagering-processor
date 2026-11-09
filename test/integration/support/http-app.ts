@@ -5,6 +5,7 @@ import { AppModule } from '../../../src/app.module';
 import { configureHttpApp } from '../../../src/presentation/configure-http-app';
 
 export interface HttpTestApp {
+  baseUrl: string;
   request(
     method: string,
     path: string,
@@ -36,9 +37,11 @@ export async function createHttpTestApp(): Promise<HttpTestApp> {
   await orm.migrator.down({ to: 0 });
   await orm.migrator.up();
 
+  const baseUrl = `http://127.0.0.1:${port}`;
   return {
+    baseUrl,
     async request(method, path, options = {}) {
-      const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+      const response = await fetch(`${baseUrl}${path}`, {
         method,
         headers: { 'content-type': 'application/json', ...options.headers },
         ...(options.body !== undefined ? { body: JSON.stringify(options.body) } : {}),

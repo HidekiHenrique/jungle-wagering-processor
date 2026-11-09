@@ -12,6 +12,7 @@ import {
   type OnApplicationBootstrap,
 } from '@nestjs/common';
 import { CLOCK, type Clock } from '../../../../shared/application/clock.port';
+import { METRICS, type Metrics } from '../../../../shared/application/metrics.port';
 import { APP_CONFIG, type AppConfig } from '../../../../shared/infrastructure/config/app-config';
 import { OutboxMessage } from '../../domain/outbox-message';
 import { QUEUE_URLS, type QueueUrls, SQS_CLIENT } from '../sqs/sqs-client.provider';
@@ -62,6 +63,7 @@ export class OutboxRelay implements OnApplicationBootstrap, BeforeApplicationShu
     @Inject(QUEUE_URLS) private readonly queueUrls: QueueUrls,
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -126,6 +128,7 @@ export class OutboxRelay implements OnApplicationBootstrap, BeforeApplicationShu
           nextAttemptAt: row.next_attempt_at ? new Date(row.next_attempt_at) : undefined,
         });
         message.scheduleRetry(now);
+        this.metrics.retryScheduled('outbox-publish');
         await em.execute(`UPDATE outbox_messages SET attempts = ?, next_attempt_at = ? WHERE id = ?`, [
           message.attempts,
           message.nextAttemptAt,

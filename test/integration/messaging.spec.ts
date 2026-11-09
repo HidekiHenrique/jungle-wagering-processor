@@ -20,6 +20,7 @@ import {
 } from '../../src/modules/wagering/infrastructure/sqs/wager-request.producer';
 import { WagerTransactionConsumer } from '../../src/modules/wagering/presentation/sqs/wager-transaction.consumer';
 import { CLOCK, type Clock } from '../../src/shared/application/clock.port';
+import { METRICS, type Metrics } from '../../src/shared/application/metrics.port';
 import { APP_CONFIG, type AppConfig } from '../../src/shared/infrastructure/config/app-config';
 import { createHttpTestApp, type HttpTestApp } from './support/http-app';
 import { createTestQueues, type TestQueues, waitFor } from './support/sqs-test-queues';
@@ -94,7 +95,7 @@ const debits = async (walletId: string) =>
     )[0]?.n,
   );
 
-const queueIsEmpty = async () => (await queues.receive(queues.urls.wager, { waitSeconds: 1 })).length === 0;
+const queueIsEmpty = async () => (await queues.depth(queues.urls.wager)) === 0;
 
 describe('consumer (running)', () => {
   beforeAll(async () => {
@@ -293,6 +294,7 @@ describe('outbox relay', () => {
       api.get<QueueUrls>(QUEUE_URLS),
       api.get<Clock>(CLOCK),
       api.get<AppConfig>(APP_CONFIG),
+      api.get<Metrics>(METRICS),
     );
 
   async function drain(r: OutboxRelay) {

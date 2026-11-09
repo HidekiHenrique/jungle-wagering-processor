@@ -363,7 +363,7 @@ Paginação por *keyset* na coluna identity `sequence` (mais recentes primeiro):
 
 ### 8.4 Reconciliação
 
-Uma única instrução SQL lê `wallets.balance` e soma o ledger: um snapshot só, então uma movimentação concorrente não fabrica divergência falsa. A divergência é logada (`warn`) e sinalizada (`consistent: false`, `difference = stored − calculated`); **nunca** corrigida. A métrica de divergências entra na Etapa 7.
+Uma única instrução SQL lê `wallets.balance` e soma o ledger: um snapshot só, então uma movimentação concorrente não fabrica divergência falsa. A divergência é logada (`warn`) e sinalizada (`consistent: false`, `difference = stored − calculated`); **nunca** corrigida. A divergência também é contada em `wallet_reconciliations_total{result="inconsistent"}` (§11.2).
 
 ### 8.5 Autenticação (decisão A16: não implementada)
 
@@ -468,8 +468,60 @@ Padrão: base 2 s, teto 300 s, 10 tentativas (`PENDING_REFERENCE_*`). Verificaç
 
 Justificativa: a desordem normal (paralelismo da fila, reenvio do provedor) se resolve em milissegundos ou segundos, e o wake-up nem espera o backoff. As tentativas seguintes cobrem provedores que reenviam com o próprio backoff de alguns minutos. Depois de ~18 min, a referência muito provavelmente nunca vai chegar, e manter a transação pendente só esconde o problema; a rejeição explícita leva o provedor a reconciliar. Os valores são configuráveis por ambiente.
 
-## 11. Seções pendentes
+## 11. Observabilidade e recuperação distribuída (Etapa 7)
+
+### 11.1 Logs
+
+JSON, uma linha por evento, com `correlationId`, `messageId`, `transactionId`, `walletId` e `providerId` propagados por `AsyncLocalStorage` (§4). HTTP: `X-Correlation-Id` do chamador ou UUIDv7; SQS: o `messageId` da mensagem. Chaves sensíveis são mascaradas; payloads financeiros completos nunca são logados.
+
+### 11.2 Métricas (`GET /metrics`, formato Prometheus)
+
+A aplicação reporta pelo port `Metrics` (camada application, sem dependência de tecnologia); `PrometheusMetrics` (`prom-client`) exporta.
+
+| Requisito | Métrica | Tipo | Labels |
+|---|---|---|---|
+| transações por status | `wager_transactions_total` | counter | `status`, `kind`, `channel` (http, sqs, pending-reference, internal) |
+| duplicatas detectadas | `wager_duplicates_total` | counter | `source` (idempotency-key, inbox) |
+| retries | `retries_total` | counter | `source` (sqs-message, pending-reference, outbox-publish) |
+| mensagens em DLQ | `sqs_dead_lettered_total` (pela aplicação) + `sqs_dlq_messages` (profundidade da DLQ, inclui redrive do SQS) | counter + gauge | `queue` |
+| conflitos de lock | `db_lock_conflicts_total` | counter | `kind` (lock_timeout, deadlock, serialization, version_conflict) |
+| outbox lag | `outbox_lag_seconds` (idade do evento pendente mais antigo) + `outbox_pending_messages` | gauge | — |
+| latência | `wager_processing_duration_seconds` | histogram | `channel` |
+| divergências de reconciliação | `wallet_reconciliations_total` | counter | `result` (consistent, inconsistent) |
+| referências pendentes | `wager_pending_reference_transactions` | gauge | — |
+
+- Conflitos de lock são contados num ponto só: o `TransactionRunner`, que vê toda exceção que encerra uma transação.
+- Gauges que dependem de I/O (outbox, DLQ, pendentes) são calculados **na hora do scrape**. Se a leitura falhar, o valor é `NaN`, não 0: uma leitura com falha não pode parecer saudável.
+- Métricas padrão do processo (CPU, memória, event loop) vêm de `collectDefaultMetrics`.
+- `/metrics` fica aberto como o health; num ambiente real, só a rede interna o alcança.
+
+Alertas sugeridos: `outbox_lag_seconds > 60`, `increase(sqs_dead_lettered_total[5m]) > 0` ou `sqs_dlq_messages > 0`, `increase(wallet_reconciliations_total{result="inconsistent"}[1h]) > 0` (incidente financeiro), taxa de `db_lock_conflicts_total` (wallet disputada), p99 de `wager_processing_duration_seconds`.
+
+### 11.3 Health checks
+
+| Endpoint | Significado | Falha → orquestrador |
+|---|---|---|
+| `GET /health/live` | o processo responde | reinicia o container |
+| `GET /health/ready` | Postgres (`SELECT 1`) e SQS (`GetQueueAttributes`) acessíveis, cada um com timeout de 2 s; responde `503 draining` durante o shutdown | tira a instância do balanceador, sem reiniciar |
+
+A queda de uma dependência deixa a instância **não pronta**, mas viva: ela volta sozinha quando a dependência volta, sem loop de restart. No SIGTERM, o readiness passa a 503 enquanto os workers terminam o que estão fazendo (o servidor HTTP só fecha depois desses hooks), para o balanceador parar de mandar requisições novas.
+
+### 11.4 Testes distribuídos (`bun run test:distributed`)
+
+Processos reais e independentes (`Bun.spawn('bun src/main.ts')`), cada um com HTTP, consumer, relay e worker, no mesmo Postgres e SQS, como N containers:
+
+| Cenário | Verificação |
+|---|---|
+| **3 instâncias** (teste 4): 5 wallets × 30 BETs, cada BET enviada **duas vezes**, por HTTP (a uma instância qualquer) e por SQS | 20 débitos por wallet, 10 rejeições, saldo 0.00, nenhuma divergência; os logs mostram que mais de uma instância consumiu |
+| 80/80 em **processos diferentes** | um 201 e um 422; saldo 20.00 |
+| **`kill -9`** durante a carga (teste 5) | as mensagens que o processo morto segurava reaparecem depois do visibility timeout e são processadas por outro; as 90 BETs aplicadas exatamente uma vez; DLQ vazia |
+| **reinício** (teste 8): processo sem workers commita ROLLBACK pendente + BET + eventos e morre com `kill -9`; um novo processo sobe | o ROLLBACK é resolvido, a outbox esvazia, o saldo volta a 100.00; o SIGTERM do sobrevivente executa os hooks de shutdown |
+
+Ao final de cada cenário, uma verificação global em **todas** as wallets: saldo = soma do ledger, nenhuma transação `PENDING`, outbox vazia, nenhum lançamento duplicado.
+
+Lição dos testes: "fila vazia" se mede por `ApproximateNumberOfMessages + NotVisible`, nunca por `ReceiveMessage`, que não vê as mensagens em voo (inclusive as de um processo morto) e ainda as tira de quem deveria processá-las.
+
+## 12. Seções pendentes
 
 - Modelo de domínio e Money *(Etapa 2)*
-- Métricas, health e recuperação distribuída *(Etapa 7)*
 - Failure codes, trade-offs, ambiguidades resolvidas e limitações *(contínuo)*

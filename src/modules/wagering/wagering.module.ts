@@ -14,6 +14,7 @@ import { ProcessWagerTransactionUseCase } from './application/use-cases/process-
 import { WagerSettlementService } from './application/wager-settlement.service';
 import { MikroOrmWagerTransactionRepository } from './infrastructure/persistence/mikro-orm-wager-transaction.repository';
 import { WagerTransactionRecordSchema } from './infrastructure/persistence/wager-transaction.record';
+import { WageringGauges } from './infrastructure/wagering-gauges';
 import { PendingReferenceWorker } from './infrastructure/workers/pending-reference.worker';
 import { WagerTransactionsController } from './presentation/http/wager-transactions.controller';
 import { WalletOpeningController } from './presentation/http/wallet-opening.controller';
@@ -41,6 +42,7 @@ import { WagerTransactionConsumer } from './presentation/sqs/wager-transaction.c
     WagerSettlementService,
     ProcessPendingReferencesUseCase,
     PendingReferenceWorker,
+    WageringGauges,
   ],
   exports: [
     ProcessWagerTransactionUseCase,

@@ -4,7 +4,7 @@ Solução do [desafio backend da Jungle Gaming](docs/CHALLENGE.md): serviço fin
 
 Decisões técnicas: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-> Em desenvolvimento por etapas. Concluídas: **1 — Fundação**, **2 — Domínio**, **3 — Núcleo transacional**, **4 — API HTTP**, **5 — Mensageria**, **6 — Referências pendentes**.
+> Em desenvolvimento por etapas. Concluídas: **1 — Fundação**, **2 — Domínio**, **3 — Núcleo transacional**, **4 — API HTTP**, **5 — Mensageria**, **6 — Referências pendentes**, **7 — Observabilidade e recuperação distribuída**.
 
 ## Stack
 
@@ -80,6 +80,8 @@ Logs saem em JSON, uma linha por evento. Toda resposta HTTP traz `X-Correlation-
 | `POST` | `/wagering/transactions` | submete BET/WIN/LOSS/REFUND/ROLLBACK (header `Idempotency-Key` obrigatório) |
 | `GET` | `/wagering/transactions/:transactionId` | consulta por id interno |
 | `GET` | `/providers/:providerId/wagering/transactions/:externalTransactionId` | consulta por id do provedor |
+| `GET` | `/health/live` · `/health/ready` | liveness · readiness (Postgres + SQS); sem autenticação |
+| `GET` | `/metrics` | métricas Prometheus |
 
 Status por resultado: 201 aplicada · 200 replay · 202 aguardando referência · 400 inválida · 404 inexistente · 409 conflito de idempotência · 422 rejeição de negócio (`failureCode`) · 503 transitório (`Retry-After`, reenviar). Detalhes em [ARCHITECTURE.md §8](ARCHITECTURE.md).
 
@@ -111,7 +113,9 @@ curl -X POST localhost:3000/wallets/<walletId>/reconciliation
 
 ```bash
 bun run test              # unitários
-bun run test:integration  # integração (requer infra:up)
+bun run test:integration  # integração com Postgres e SQS reais (requer infra:up)
+bun run test:distributed  # 3+ processos reais, kill -9 e reinício (requer infra:up)
+bun run test:all          # tudo
 bun run typecheck         # tsc --noEmit
 bun run lint              # biome
 bun run format            # biome com correções

@@ -9,6 +9,7 @@ import {
 } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import { METRICS, type Metrics } from '../../../../shared/application/metrics.port';
 import { DomainError } from '../../../../shared/domain/domain-error';
 import { APP_CONFIG, type AppConfig } from '../../../../shared/infrastructure/config/app-config';
 import { isTransientInfrastructureError } from '../../../../shared/infrastructure/database/transient-error';
@@ -51,6 +52,7 @@ export class WagerTransactionConsumer
     private readonly processWager: ProcessWagerTransactionUseCase,
     private readonly pollers: SqsPollerFactory,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -76,7 +78,7 @@ export class WagerTransactionConsumer
 
   async handle(message: Message): Promise<MessageDecision> {
     const parsed = await this.parse(message.Body);
-    if (typeof parsed === 'string') return { action: 'dead-letter', reason: parsed };
+    if (typeof parsed === 'string') return this.deadLetter(parsed);
     const { data } = parsed;
 
     return runWithLogContext(
@@ -116,9 +118,7 @@ export class WagerTransactionConsumer
       this.logger.warn({ msg: 'Wager message rejected', code: (error as { code: string }).code });
       return { action: 'ack' };
     }
-    if (error instanceof DomainError) {
-      return { action: 'dead-letter', reason: `${error.code}: ${error.message}` };
-    }
+    if (error instanceof DomainError) return this.deadLetter(`${error.code}: ${error.message}`);
     const delaySeconds = retryDelaySeconds(
       message,
       this.config.sqs.retryBaseDelaySeconds,
@@ -131,7 +131,13 @@ export class WagerTransactionConsumer
       receiveCount: message.Attributes?.ApproximateReceiveCount,
       error: String(error),
     });
+    this.metrics.retryScheduled('sqs-message');
     return { action: 'retry', delaySeconds };
+  }
+
+  private deadLetter(reason: string): MessageDecision {
+    this.metrics.deadLettered(this.config.sqs.wagerQueue);
+    return { action: 'dead-letter', reason };
   }
 
   /** @returns the validated message, or the reason it can never be processed. */

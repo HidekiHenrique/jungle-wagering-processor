@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { CLOCK, type Clock } from '../../../../shared/application/clock.port';
 import { ID_GENERATOR, type IdGenerator } from '../../../../shared/application/id-generator.port';
+import { METRICS, type Metrics } from '../../../../shared/application/metrics.port';
 import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
@@ -77,6 +78,7 @@ export class ProcessWagerTransactionUseCase {
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
     private readonly settlement: WagerSettlementService,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<WagerTransactionResult> {
@@ -84,18 +86,21 @@ export class ProcessWagerTransactionUseCase {
     // Validation happens before opening a transaction: invalid payloads never touch the database.
     const candidate = this.buildTransaction(command, now);
 
-    return this.transactions.run(async () => {
+    const startedAt = performance.now();
+    const result = await this.transactions.run(async () => {
       if (command.inbox) {
         const message = InboxMessage.receive({ ...command.inbox, receivedAt: now });
         message.markProcessed(now);
-        if (!(await this.inbox.tryRecord(message))) return this.replay(candidate);
+        if (!(await this.inbox.tryRecord(message))) return this.replay(candidate, 'inbox');
       }
 
       if (!(await this.wallets.exists(candidate.walletId))) throw new WalletNotFoundError(candidate.walletId);
-      if (!(await this.wagers.tryInsert(candidate))) return this.replay(candidate);
+      if (!(await this.wagers.tryInsert(candidate))) return this.replay(candidate, 'idempotency-key');
 
       return this.settle(candidate, command, now);
     });
+    this.metrics.processingDuration(channelOf(command), (performance.now() - startedAt) / 1_000);
+    return result;
   }
 
   private buildTransaction(command: ProcessWagerTransactionCommand, now: Date): WagerTransaction {
@@ -119,12 +124,16 @@ export class ProcessWagerTransactionUseCase {
   }
 
   /** The operation already exists: same payload → original result; otherwise → conflict. */
-  private async replay(candidate: WagerTransaction): Promise<WagerTransactionResult> {
+  private async replay(
+    candidate: WagerTransaction,
+    source: 'inbox' | 'idempotency-key',
+  ): Promise<WagerTransactionResult> {
     const existing = await this.wagers.findByIdempotencyKey(candidate.providerId, candidate.idempotencyKey);
     if (existing) {
       if (!existing.matchesPayload(candidate.payloadHash)) {
         throw new IdempotencyKeyConflictError(candidate.providerId, candidate.idempotencyKey);
       }
+      this.metrics.duplicateDetected(source);
       return toResult(existing, true);
     }
     if (await this.wagers.findByExternalId(candidate.providerId, candidate.externalTransactionId)) {
@@ -143,11 +152,14 @@ export class ProcessWagerTransactionUseCase {
     await this.settlement.settle(transaction, wallet, {
       correlationId: command.correlationId,
       causationId: command.inbox?.messageId,
+      channel: channelOf(command),
       now,
     });
     return toResult(transaction, false);
   }
 }
+
+const channelOf = (command: ProcessWagerTransactionCommand) => (command.inbox ? 'sqs' : 'http');
 
 export function toResult(transaction: WagerTransaction, idempotentReplay: boolean): WagerTransactionResult {
   return {

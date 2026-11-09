@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { METRICS, type Metrics } from '../../../../shared/application/metrics.port';
 import { Money } from '../../../../shared/domain/money';
 import { WalletNotFoundError } from '../errors';
 import { LEDGER_REPOSITORY, type LedgerRepository } from '../ports/ledger.repository';
@@ -22,7 +23,10 @@ export interface ReconciliationReport {
 export class ReconcileWalletUseCase {
   private readonly logger = new Logger(ReconcileWalletUseCase.name);
 
-  constructor(@Inject(LEDGER_REPOSITORY) private readonly ledger: LedgerRepository) {}
+  constructor(
+    @Inject(LEDGER_REPOSITORY) private readonly ledger: LedgerRepository,
+    @Inject(METRICS) private readonly metrics: Metrics,
+  ) {}
 
   async execute(walletId: string): Promise<ReconciliationReport> {
     const audit = await this.ledger.auditBalance(walletId);
@@ -40,6 +44,7 @@ export class ReconcileWalletUseCase {
       checkedEntries: audit.checkedEntries,
     };
 
+    this.metrics.reconciliationChecked(report.consistent);
     if (!report.consistent) {
       this.logger.warn({
         msg: 'Wallet balance diverges from its ledger',

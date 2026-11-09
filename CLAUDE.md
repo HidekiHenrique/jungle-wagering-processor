@@ -305,4 +305,5 @@ Ao fim de cada etapa, atualizar `docs/STUDY-NOTES.md` (local, fora do git): deci
 - Etapa 4 — API HTTP: concluída e commitada (2026-11-09).
 - Etapa 5 — Mensageria: concluída e commitada (2026-11-09).
 - Etapa 6 — Referências pendentes: concluída e commitada (2026-11-09).
-- Próxima: **7 — Observabilidade e recuperação distribuída** (não iniciar sem autorização).
+- Etapa 7 — Observabilidade e recuperação distribuída: concluída e commitada (2026-11-09).
+- Próxima: **8 — Revisão final** (não iniciar sem autorização).

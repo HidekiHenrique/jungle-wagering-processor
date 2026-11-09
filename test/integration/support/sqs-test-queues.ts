@@ -14,6 +14,11 @@ export interface TestQueues {
   names: { wager: string; dlq: string; events: string };
   urls: { wager: string; dlq: string; events: string };
   receive(url: string, options?: { max?: number; waitSeconds?: number }): Promise<Message[]>;
+  /**
+   * Visible + in flight + delayed. Unlike receive(), it sees messages a consumer holds (or a
+   * crashed consumer held) and it does not take them from anyone.
+   */
+  depth(url: string): Promise<number>;
   /** Points the app config (read at boot) to these queues. */
   applyToEnv(): void;
   destroy(): Promise<void>;
@@ -68,6 +73,23 @@ export async function createTestQueues(options: {
           }),
         )
       ).Messages ?? [],
+    async depth(url) {
+      const { Attributes = {} } = await sqs.send(
+        new GetQueueAttributesCommand({
+          QueueUrl: url,
+          AttributeNames: [
+            'ApproximateNumberOfMessages',
+            'ApproximateNumberOfMessagesNotVisible',
+            'ApproximateNumberOfMessagesDelayed',
+          ],
+        }),
+      );
+      return (
+        Number(Attributes.ApproximateNumberOfMessages ?? 0) +
+        Number(Attributes.ApproximateNumberOfMessagesNotVisible ?? 0) +
+        Number(Attributes.ApproximateNumberOfMessagesDelayed ?? 0)
+      );
+    },
     applyToEnv() {
       process.env.SQS_WAGER_QUEUE = names.wager;
       process.env.SQS_WAGER_DLQ = names.dlq;

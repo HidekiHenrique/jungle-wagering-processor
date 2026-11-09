@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ID_GENERATOR, type IdGenerator } from '../../../shared/application/id-generator.port';
+import { type Channel, METRICS, type Metrics } from '../../../shared/application/metrics.port';
 import type { BackoffPolicy } from '../../../shared/domain/backoff-policy';
 import type { EventContext, IntegrationEvent } from '../../../shared/domain/integration-event';
 import {
@@ -27,6 +28,7 @@ import {
 export interface SettlementContext {
   correlationId: string;
   causationId?: string | undefined;
+  channel: Channel;
   now: Date;
 }
 
@@ -47,6 +49,7 @@ export class WagerSettlementService {
     @Inject(OUTBOX_REPOSITORY) private readonly outbox: OutboxRepository,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
     @Inject(PENDING_REFERENCE_POLICY) private readonly pendingReferencePolicy: BackoffPolicy,
+    @Inject(METRICS) private readonly metrics: Metrics,
   ) {}
 
   async settle(
@@ -84,6 +87,11 @@ export class WagerSettlementService {
       await this.wagers.wakeDependents(transaction, ctx.now);
     }
     await this.outbox.add(this.eventsFor(transaction, wallet, outcome, ctx));
+
+    const stillWaiting =
+      outcome.status === WagerTransactionStatus.PendingReference && transaction.referenceAttempts > 1;
+    if (stillWaiting) this.metrics.retryScheduled('pending-reference');
+    else this.metrics.transactionSettled(outcome.status, transaction.kind, ctx.channel);
     return outcome;
   }
 

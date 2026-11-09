@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { SharedModule } from '../../shared/infrastructure/shared.module';
 import { INBOX_REPOSITORY } from './application/ports/inbox.repository';
 import { OUTBOX_REPOSITORY } from './application/ports/outbox.repository';
+import { MessagingGauges } from './infrastructure/messaging-gauges';
 import { OutboxRelay } from './infrastructure/outbox/outbox-relay';
 import {
   InboxMessageRecordSchema,
@@ -27,6 +28,7 @@ import { SqsPollerFactory } from './infrastructure/sqs/sqs-poller.factory';
     queueUrlsProvider,
     SqsPollerFactory,
     OutboxRelay,
+    MessagingGauges,
   ],
   exports: [OUTBOX_REPOSITORY, INBOX_REPOSITORY, SQS_CLIENT, QUEUE_URLS, SqsPollerFactory, OutboxRelay],
 })
