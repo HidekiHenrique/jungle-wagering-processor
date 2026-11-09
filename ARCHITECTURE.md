@@ -92,7 +92,153 @@ Camadas por módulo: `domain` (sem Nest/ORM/HTTP/SQS) ← `application` (use cas
 - `CorrelationIdMiddleware` reaproveita `X-Correlation-Id` válido do chamador ou gera um UUIDv7, e devolve no header da resposta.
 - Chaves sensíveis (`password`, `secret`, `token`, `authorization`, `cookie`, `api-key`) são mascaradas em qualquer profundidade. Payloads financeiros completos não são logados por regra de código, não por filtro.
 
-## 5. Seções pendentes
+## 5. Modelo de domínio (Etapa 2)
+
+Todo o domínio é TypeScript puro: nenhum import de NestJS, MikroORM, Express, SQS ou de camadas externas. O teste `test/unit/architecture/domain-purity.spec.ts` falha se isso mudar.
+
+```mermaid
+classDiagram
+  class Money {
+    <<value object>>
+    -minorUnits: bigint
+    +currency
+    +from(props) Money
+    +add() subtract() negate()
+  }
+  class Wallet {
+    <<aggregate root>>
+    +open(props) OpenedWallet
+    +debit(movement) WalletLedgerEntry
+    +credit(movement) WalletLedgerEntry
+    +canDebit(money)
+  }
+  class WalletLedgerEntry {
+    <<imutável>>
+    +create(props) valida aritmética
+    +isBalanced()
+  }
+  class WagerTransaction {
+    +create(props) PENDING
+    +opening(props)
+    +markProcessed() markPendingReference() reject() fail()
+    +ledgerDirectionFor(reference)
+  }
+  class settleWager {
+    <<domain service>>
+    regras do §7
+  }
+  Wallet --> WalletLedgerEntry : produz
+  settleWager --> Wallet : movimenta
+  settleWager --> WagerTransaction : transiciona
+  Wallet --> Money
+  WagerTransaction --> Money
+```
+
+### 5.1 Regras gerais
+
+- Construtor `private` + factories (`create`, `open`, `opening`, `from`, `enqueue`, `receive`) e `rehydrate`. `rehydrate` reconstrói estado persistido **sem revalidar**.
+- `DomainError` (com `code` estável) = violação de regra de negócio, esperada e tratável. `InvariantViolationError` = bug (transição impossível, chamada fora de ordem) e vira 500. `InvalidTransactionStateError` é deste segundo tipo, como pede o README.
+- Ids e datas são recebidos de quem chama: o domínio não gera UUID nem lê o relógio, o que o torna determinístico nos testes.
+
+### 5.2 Money
+
+- `bigint` de centavos, escala fixa 2. Sem dependência externa: o desafio só precisa de soma, subtração e comparação, então uma biblioteca decimal não se justifica.
+- Entrada validada por regex: inteiro sem zeros à esquerda, de 0 a 2 casas decimais, no máximo 18 dígitos inteiros (cabe em `numeric(20,2)`). Rejeita vazio, espaços, sinal, notação científica, `NaN`, `Infinity`, hexadecimal e vírgula. `amount` que chega como número JSON é rejeitado, então nenhum float entra no domínio.
+- **Não arredonda**: mais de 2 casas é erro, não arredondamento.
+- Negativos só surgem por aritmética (`negate`, `subtract`); `from` nunca aceita negativo.
+- `equals` entre moedas diferentes retorna `false`; `add`, `subtract` e `isLessThan` lançam `CurrencyMismatchError`.
+- Instâncias congeladas (`Object.freeze`).
+
+### 5.3 Wallet e ledger
+
+- `debit`/`credit` retornam o `WalletLedgerEntry` da movimentação: não existe caminho que mude o saldo sem gerar lançamento. O lançamento é criado e validado **antes** de mutar a wallet; se for inválido, a wallet fica intacta.
+- `version` começa em 1 e sobe 1 por movimentação.
+- `Wallet.open` com saldo inicial positivo devolve também o lançamento OPENING, mas a wallet nasce com `version = 1` (o exemplo do README mostra `version: 1` logo após criar com 1000.00). Saldo inicial zero: sem OPENING e sem lançamento.
+- `WalletLedgerEntry.create` valida: valor positivo, mesma moeda nos três valores, saldos não negativos e `balanceBefore ± money === balanceAfter`. A instância é congelada e não tem métodos de transição.
+
+### 5.4 WagerTransaction e transições
+
+```mermaid
+stateDiagram-v2
+  [*] --> PENDING : create / opening
+  PENDING --> PROCESSED
+  PENDING --> REJECTED
+  PENDING --> PENDING_REFERENCE
+  PENDING_REFERENCE --> PENDING_REFERENCE : nova tentativa (backoff)
+  PENDING_REFERENCE --> PROCESSED
+  PENDING_REFERENCE --> REJECTED
+  PENDING_REFERENCE --> FAILED
+  PROCESSED --> [*]
+  REJECTED --> [*]
+  FAILED --> [*]
+```
+
+- `PENDING` só existe dentro da transação SQL; o que é commitado é sempre `PROCESSED`, `REJECTED` ou `PENDING_REFERENCE`.
+- Qualquer transição a partir de estado terminal lança `InvalidTransactionStateError`.
+- `balanceAfter` guarda o saldo observado na decisão, devolvido no replay (regra 7 do §7).
+- `referenceAttempts` e `nextReferenceCheckAt` controlam o reprocessamento de referências pendentes.
+- OPENING só nasce por `WagerTransaction.opening`, sob o provider reservado `__internal__`; `create` rejeita OPENING e esse provider.
+
+### 5.5 `settleWager`: onde vivem as regras do §7
+
+Domain service (função pura) porque a decisão envolve dois agregados (transação e wallet) e lê um terceiro (a referência). Quem chama carrega e trava os dados, chama `settleWager` e persiste o que mudou, tudo numa transação SQL. Ordem das verificações:
+
+1. Wallet de outro player → `WALLET_PLAYER_MISMATCH`, **sem** gravar `balanceAfter` (o replay não vaza o saldo de outra pessoa). Moeda diferente → `CURRENCY_MISMATCH`.
+2. Referência (quando há `referenceExternalTransactionId`):
+   - ausente, ou ela mesma ainda pendente → `PENDING_REFERENCE` com backoff; esgotadas as tentativas → `REFERENCE_NOT_FOUND`;
+   - `REJECTED`/`FAILED` → `REFERENCE_NOT_PROCESSED`;
+   - outro player, wallet, moeda ou rodada → `REFERENCE_MISMATCH`;
+   - tipo não permitido → `REFERENCE_KIND_NOT_ALLOWED` (tabela `ALLOWED_REFERENCE_KINDS`);
+   - reversões: valor diferente → `REFERENCE_AMOUNT_MISMATCH`; já revertida → `REFERENCE_ALREADY_REVERSED`.
+3. Saldo: operações sem efeito (LOSS, WIN zero) são PROCESSED sem lançamento e sem mudar `version`. Débito sem saldo → `INSUFFICIENT_FUNDS` para BET e `REVERSAL_INSUFFICIENT_FUNDS` para ROLLBACK.
+
+Direção do lançamento: BET → DEBIT; WIN, REFUND e OPENING → CREDIT; ROLLBACK → inverso da referência (BET → CREDIT; WIN ou REFUND → DEBIT).
+
+### 5.6 Failure codes
+
+| Código | Quando | Persistido? |
+|---|---|---|
+| `INSUFFICIENT_FUNDS` | BET maior que o saldo | sim |
+| `REVERSAL_INSUFFICIENT_FUNDS` | ROLLBACK que deixaria saldo negativo | sim |
+| `CURRENCY_MISMATCH` | moeda da operação ≠ moeda da wallet | sim |
+| `WALLET_PLAYER_MISMATCH` | wallet de outro player | sim (sem saldo) |
+| `WALLET_NOT_FOUND` | wallet inexistente | **não** (a FK impede; nada a auditar) |
+| `REFERENCE_NOT_FOUND` | referência nunca chegou (tentativas esgotadas) | sim |
+| `REFERENCE_NOT_PROCESSED` | referência terminou REJECTED/FAILED | sim |
+| `REFERENCE_MISMATCH` | referência de outro player/wallet/moeda/rodada | sim |
+| `REFERENCE_KIND_NOT_ALLOWED` | ex.: REFUND de WIN, ROLLBACK de LOSS ou de ROLLBACK | sim |
+| `REFERENCE_AMOUNT_MISMATCH` | valor da reversão ≠ valor da referência | sim |
+| `REFERENCE_ALREADY_REVERSED` | referência já revertida por REFUND ou ROLLBACK | sim |
+| `PROCESSING_FAILED` | erro permanente em transação já persistida (status FAILED) | sim |
+
+Contrato: valores nunca são renomeados nem reutilizados. Rejeição é final para aquela idempotency key; reenviar o mesmo payload devolve a mesma rejeição. Para tentar de novo, o provider corrige a causa e envia uma **nova** transação.
+
+### 5.7 Eventos de integração
+
+`IntegrationEvent<T>` abstrato; cada subclasse fixa `eventType` e `version = 1` no tipo e expõe `static from(...)`, que valida o estado da transação. `data` carrega só JSON (`MoneyProps`, datas ISO) e é congelado. `WalletBalanceChanged` pertence a `wallets` (é emitido uma vez por lançamento); os três eventos de transação pertencem a `wagering`.
+
+### 5.8 Inbox e Outbox
+
+- `InboxMessage`: chave `(consumerName, messageId)`, que será a PK da tabela; `markProcessed` só uma vez.
+- `OutboxMessage.enqueue(event)`: `id = eventId` (consumidores deduplicam por ele), payload = envelope serializado, devido imediatamente. `scheduleRetry` aplica backoff (padrão 1s a 1min, sem limite de tentativas: evento confirmado nunca é descartado). `markPublished` só uma vez.
+- `BackoffPolicy` (shared) é a mesma política usada por referências pendentes e outbox.
+
+## 6. Ambiguidades resolvidas
+
+Decisões A1–A16 da análise inicial (registradas no `CLAUDE.md`, §6–§11), mais as tomadas na Etapa 2:
+
+| # | Questão | Decisão |
+|---|---|---|
+| A1 | REFUND e ROLLBACK da mesma BET | uma referência só é revertida **uma vez, por qualquer tipo**; o segundo vira `REFERENCE_ALREADY_REVERSED` (senão a BET seria creditada duas vezes) |
+| A2 | Valor de LOSS | `amount >= 0`; não exige zero |
+| A17 | WIN com valor `0.00` | aceito e PROCESSED sem lançamento e sem mudar `version`. O README não trata valor zero; a tabela do §7 diz "WIN: 1 entrada CREDIT", mas um crédito de zero não move saldo, e o §6.4 diz que operações sem efeito no saldo não geram lançamento. Rejeitar recusaria mensagens possivelmente legítimas ("win 0" como rodada sem prêmio é prática comum de mercado, não regra do README) |
+| A18 | LOSS com referência | permitida, apontando para a BET da rodada (como WIN) |
+| A19 | BET com referência | inválida (400): BET abre a rodada, não referencia nada |
+| A20 | Transação que referencia a si mesma | inválida (400) |
+| A21 | Valor zero | BET zero é inválida (400): geraria lançamento vazio. REFUND/ROLLBACK zero são aceitos como payload e rejeitados pela regra 5 (`REFERENCE_AMOUNT_MISMATCH`), ficando auditáveis |
+| A22 | Replay de rejeição por wallet de outro player | não devolve saldo |
+
+## 7. Seções pendentes
 
 - Modelo de domínio e Money *(Etapa 2)*
 - Mapeamento ORM, schema, transações, concorrência e idempotência *(Etapa 3)*

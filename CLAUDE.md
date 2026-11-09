@@ -136,6 +136,8 @@ Evite: services que só repassam chamadas; interfaces sem necessidade; repositó
 | REFUND | crédito | 1 CREDIT | referencia apenas BET `PROCESSED` |
 | ROLLBACK | inverso da referência | 1 invertido | referencia BET, WIN ou REFUND `PROCESSED` |
 
+Decisões da Etapa 2 (aprovadas, ver ARCHITECTURE §6): WIN `0.00` → PROCESSED sem lançamento (A17); LOSS pode referenciar a BET (A18); BET com referência → 400 (A19); autorreferência → 400 (A20); só BET zero → 400, REFUND/ROLLBACK zero caem na regra 5 (A21); replay de `WALLET_PLAYER_MISMATCH` não devolve saldo (A22).
+
 Regras de referência (REFUND/ROLLBACK exigem `referenceExternalTransactionId`; WIN opcional):
 
 1. Resolvida por `(providerId, referenceExternalTransactionId)`.
@@ -285,7 +287,7 @@ Opcional (só se sobrar tempo): `bun run test:load` com metodologia, p50/p95/p99
 
 Antes de encerrar uma etapa: `tsc --noEmit`, lint/format e testes da etapa passando (com saída real); conferir a separação de camadas, dependências desnecessárias e funcionalidades não pedidas; atualizar `ARCHITECTURE.md` e a seção 17.
 
-Um commit por etapa, **somente com autorização** do desenvolvedor.
+Um commit por etapa, **somente com autorização** do desenvolvedor, seguido de push para `origin` (github.com/HidekiHenrique/jungle-wagering-processor, branch `main`). **Nunca** fazer push, PR ou fork no repositório `junglegaming/*`.
 
 Ao fim de cada etapa, atualizar `docs/STUDY-NOTES.md` (local, fora do git): decisões, descobertas, dúvidas do desenvolvedor com as respostas e perguntas de entrevista **com respostas**. Esse caderno será revisado junto no final do projeto.
 
@@ -298,4 +300,5 @@ Ao fim de cada etapa, atualizar `docs/STUDY-NOTES.md` (local, fora do git): deci
 
 - Análise do desafio: concluída e aprovada (decisões registradas nas §4–§11).
 - Etapa 1 — Fundação: concluída e commitada (2026-11-09). MiniStack aprovado.
-- Próxima: **2 — Domínio** (não iniciar sem autorização).
+- Etapa 2 — Domínio: concluída e commitada (2026-11-09).
+- Próxima: **3 — Núcleo transacional** (não iniciar sem autorização).
