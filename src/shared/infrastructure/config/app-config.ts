@@ -15,6 +15,12 @@ export interface AppConfig {
     readonly password: string;
     readonly name: string;
     readonly poolMax: number;
+    readonly lockTimeoutMs: number;
+  };
+  readonly pendingReference: {
+    readonly baseDelayMs: number;
+    readonly maxDelayMs: number;
+    readonly maxAttempts: number;
   };
   readonly sqs: {
     readonly endpoint: string;
@@ -86,6 +92,12 @@ export function loadConfig(env: Env): AppConfig {
       password: str('DB_PASSWORD'),
       name: str('DB_NAME'),
       poolMax: int('DB_POOL_MAX', 1, 200),
+      lockTimeoutMs: int('DB_LOCK_TIMEOUT_MS', 1, 60_000),
+    },
+    pendingReference: {
+      baseDelayMs: int('PENDING_REFERENCE_BASE_DELAY_MS', 1, 3_600_000),
+      maxDelayMs: int('PENDING_REFERENCE_MAX_DELAY_MS', 1, 86_400_000),
+      maxAttempts: int('PENDING_REFERENCE_MAX_ATTEMPTS', 1, 1_000),
     },
     sqs: {
       endpoint: str('SQS_ENDPOINT'),

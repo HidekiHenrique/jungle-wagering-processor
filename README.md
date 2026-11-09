@@ -4,7 +4,7 @@ Solução do [desafio backend da Jungle Gaming](docs/CHALLENGE.md): serviço fin
 
 Decisões técnicas: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-> Em desenvolvimento por etapas. Concluída: **Etapa 1 — Fundação**.
+> Em desenvolvimento por etapas. Concluídas: **1 — Fundação**, **2 — Domínio**, **3 — Núcleo transacional**.
 
 ## Stack
 
@@ -30,6 +30,10 @@ cp .env.example .env      # valores padrão já funcionam com o docker-compose
 | `DB_HOST` / `DB_PORT` | `localhost` / `5432` | PostgreSQL |
 | `DB_USER` / `DB_PASSWORD` / `DB_NAME` | `wagering` | credenciais e banco |
 | `DB_POOL_MAX` | `10` | conexões máximas por instância |
+| `DB_LOCK_TIMEOUT_MS` | `5000` | espera máxima pelo lock de uma wallet (depois: erro transitório) |
+| `PENDING_REFERENCE_BASE_DELAY_MS` | `2000` | primeiro intervalo de reprocessamento de referência ausente |
+| `PENDING_REFERENCE_MAX_DELAY_MS` | `300000` | teto do backoff |
+| `PENDING_REFERENCE_MAX_ATTEMPTS` | `10` | tentativas antes de `REFERENCE_NOT_FOUND` |
 | `SQS_ENDPOINT` | `http://localhost:4566` | endpoint SQS (MiniStack local) |
 | `SQS_REGION` | `us-east-1` | região |
 | `SQS_ACCESS_KEY_ID` / `SQS_SECRET_ACCESS_KEY` | `test` | credenciais (fictícias no emulador) |

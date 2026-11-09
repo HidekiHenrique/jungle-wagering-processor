@@ -13,6 +13,8 @@ import { buildOrmOptions } from './mikro-orm.config';
         ...buildOrmOptions(config),
         // Registers middleware that forks the EntityManager per HTTP request.
         registerRequestContext: true,
+        // Each module registers its own records with MikroOrmModule.forFeature().
+        autoLoadEntities: true,
       }),
     }),
   ],

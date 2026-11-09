@@ -33,6 +33,17 @@ describe('domain purity', () => {
     expect(offending).toEqual([]);
   });
 
+  it('application layers never import the ORM, the database driver or SQS', () => {
+    const applicationFiles = [...new Glob('src/**/application/**/*.ts').scanSync(ROOT)];
+    expect(applicationFiles.length).toBeGreaterThan(5);
+    const offending = applicationFiles.flatMap((f) =>
+      importsOf(f)
+        .filter((spec) => /^@mikro-orm\/|^@aws-sdk\/|^pg$|\/(infrastructure|presentation)\//.test(spec))
+        .map((spec) => `${f} → ${spec}`),
+    );
+    expect(offending).toEqual([]);
+  });
+
   it('wallets and messaging domains never import wagering (one-way module dependencies)', () => {
     const offending = domainFiles
       .filter((f) => f.includes('/wallets/') || f.includes('/messaging/'))

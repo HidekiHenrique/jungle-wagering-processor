@@ -238,10 +238,92 @@ Decisões A1–A16 da análise inicial (registradas no `CLAUDE.md`, §6–§11),
 | A21 | Valor zero | BET zero é inválida (400): geraria lançamento vazio. REFUND/ROLLBACK zero são aceitos como payload e rejeitados pela regra 5 (`REFERENCE_AMOUNT_MISMATCH`), ficando auditáveis |
 | A22 | Replay de rejeição por wallet de outro player | não devolve saldo |
 
-## 7. Seções pendentes
+## 7. Persistência, transações e concorrência (Etapa 3)
+
+### 7.1 Schema e garantias no banco
+
+| Garantia | Mecanismo |
+|---|---|
+| Uma wallet por player + moeda | `UNIQUE (player_id, currency)` |
+| Saldo nunca negativo | `CHECK (balance >= 0)` |
+| Idempotência | `UNIQUE (provider_id, idempotency_key)` e `UNIQUE (provider_id, external_transaction_id)` |
+| No máximo 1 lançamento por transação | `UNIQUE (transaction_id)` no ledger |
+| Lançamento aritmeticamente correto | `CHECK` com `balance_after = balance_before ± amount`, `amount > 0` |
+| Lançamento na moeda da wallet | FK composta `(wallet_id, currency) → wallets (id, currency)` |
+| Ledger imutável | triggers `BEFORE UPDATE OR DELETE` e `BEFORE TRUNCATE` → `forbid_mutation()` |
+| Uma reversão por referência (A1) | índice único parcial em `reference_transaction_id` para REFUND/ROLLBACK `PROCESSED` |
+| `PENDING` nunca é commitado | *constraint trigger* `DEFERRABLE INITIALLY DEFERRED`, que verifica o estado final da linha no COMMIT |
+| OPENING só interno | `CHECK ((kind = 'OPENING') = (provider_id = '__internal__'))` |
+| Coerência de status | `failure_code` sse REJECTED/FAILED; PROCESSED exige `balance_after`; reversão PROCESSED exige referência resolvida; PENDING_REFERENCE exige próxima verificação agendada |
+| Inbox | `PRIMARY KEY (consumer_name, message_id)` |
+
+`test/integration/schema-constraints.spec.ts` grava SQL direto, contornando a aplicação, e prova cada linha da tabela.
+
+### 7.2 Mapeamento ORM
+
+- Records (`EntitySchema`, sem decorators) na infraestrutura de cada módulo, registrados com `MikroOrmModule.forFeature` + `autoLoadEntities`.
+- Mappers convertem record ⇄ domínio; leitura sempre via `rehydrate`. Colunas monetárias hidratam como **string** (`DecimalType('string')`), nunca `number`.
+- Leituras usam `disableIdentityMap`: o record vira objeto de domínio na hora, e cache de records só arriscaria estado velho.
+- O que usamos do MikroORM: `em.transactional()` com propagação por contexto, `insert`, `insertMany`, `nativeUpdate` (retorna linhas afetadas, base da checagem de versão), `find`/`count`, tradução de exceções do driver (`UniqueConstraintViolationException`) e o Migrator.
+- SQL explícito em dois pontos que o ORM não expressa: `SELECT … FOR NO KEY UPDATE` e `INSERT … ON CONFLICT DO NOTHING` sem alvo (cobre as duas unicidades de uma vez).
+
+### 7.3 Fronteira transacional
+
+`TransactionRunner.run(work)` (port em `shared/application`) é implementado com `em.fork().transactional()`. O MikroORM registra o fork num contexto `AsyncLocalStorage`; os repositórios injetam o `EntityManager` global, e cada chamada resolve para o fork da transação corrente. Assim o use case não importa MikroORM, e todos os repositórios caem na mesma conexão.
+
+- Isolamento **READ COMMITTED** (padrão do Postgres): a correção vem de locks de linha e constraints únicas, não de retries de SERIALIZABLE.
+- `SET LOCAL lock_timeout` (`DB_LOCK_TIMEOUT_MS`): espera por lock é limitada e vira erro transitório em vez de fila infinita.
+- Nada de rede dentro da transação; eventos só vão para a tabela outbox.
+
+### 7.4 Processamento de uma transação
+
+```mermaid
+sequenceDiagram
+  participant C as Controller / Consumer
+  participant U as ProcessWagerTransactionUseCase
+  participant DB as PostgreSQL
+  C->>U: command
+  U->>U: Money.from + WagerTransaction.create + payloadHash (inválido → erro, sem tocar o banco)
+  U->>DB: BEGIN; SET LOCAL lock_timeout
+  opt veio da fila
+    U->>DB: INSERT inbox ON CONFLICT DO NOTHING
+    Note over U,DB: 0 linhas → redelivery → replay
+  end
+  U->>DB: SELECT wallet existe? (não → WALLET_NOT_FOUND, nada persistido)
+  U->>DB: INSERT transação PENDING ON CONFLICT DO NOTHING
+  alt conflito
+    Note over DB: duplicata concorrente espera o COMMIT da 1ª no índice único
+    U->>DB: SELECT por key → mesmo hash: replay / hash diferente: 409
+    U->>DB: (sem key) SELECT por external id → 409
+  else nova
+    U->>DB: SELECT wallet FOR NO KEY UPDATE
+    U->>DB: SELECT referência + já revertida?
+    U->>U: settleWager (regras puras)
+    U->>DB: UPDATE wallet … WHERE version = :v (0 linhas → erro)
+    U->>DB: INSERT ledger
+    U->>DB: UPDATE transação (status final)
+    U->>DB: INSERT outbox (eventos)
+  end
+  U->>DB: COMMIT (trigger diferido confere que nada ficou PENDING)
+```
+
+### 7.5 Concorrência
+
+- **Lock pessimista por wallet** com `FOR NO KEY UPDATE`, e não `FOR UPDATE`: os dois bloqueiam outros escritores da wallet, mas `FOR UPDATE` também bloquearia o `KEY SHARE` que o Postgres usa ao inserir uma linha com FK para a wallet. Com ele, até o INSERT de outras transações da mesma wallet ficaria na fila; com `NO KEY UPDATE`, só o trecho que muda o saldo é serializado.
+- **Insert antes do lock**: duplicatas (mesma key) esperam no índice único, não na wallet. Das 50 cópias simultâneas, 1 processa e 49 fazem replay assim que ela comita.
+- **`version` no UPDATE** como defesa em profundidade, e **`CHECK (balance >= 0)`** como última barreira.
+- Sem deadlock entre wallets: cada transação trava exatamente uma wallet.
+- Prova por mutação (manual, registrada aqui): removendo o lock, os testes falham com `ConcurrentModificationError` (a `version` pega); removendo lock **e** `version`, aparece **lost update** (40 apostas de 7.00 "processadas" num saldo de 100). O `CHECK` não pega esse caso, porque o saldo nunca chega a ficar negativo.
+
+### 7.6 Idempotência
+
+- `payloadHash` = SHA-256 (hex) do JSON canônico (chaves ordenadas recursivamente, sem `undefined`) dos campos de negócio, com `money` **normalizado**: `"25"` e `"25.00"` são o mesmo payload.
+- Replay devolve o resultado gravado na própria transação (`status`, `failure_code`, `balance_after`), ou seja, o saldo observado naquele momento.
+- A inbox deduplica a **mensagem**; a proteção **financeira** entre canais (HTTP × SQS) é a unicidade da transação.
+
+## 8. Seções pendentes
 
 - Modelo de domínio e Money *(Etapa 2)*
-- Mapeamento ORM, schema, transações, concorrência e idempotência *(Etapa 3)*
 - API HTTP, mapeamento de erros, autenticação *(Etapa 4)*
 - Inbox, outbox, mensageria e shutdown *(Etapa 5)*
 - Referências pendentes *(Etapa 6)*

@@ -168,7 +168,7 @@ Worker agendado; backoff `2^n` s com teto de 5 min; até 10 tentativas (~30 min)
 
 **Concorrência:** unidade = wallet.
 
-- `SELECT … FOR UPDATE` na wallet (lock pessimista por linha).
+- `SELECT … FOR NO KEY UPDATE` na wallet (lock pessimista por linha; não bloqueia o KEY SHARE das FKs, ver ARCHITECTURE §7.5).
 - `version` no `WHERE` do UPDATE como defesa extra.
 - `CHECK (balance >= 0)` como última barreira.
 - `lock_timeout` curto → erro transitório (503) + métrica de conflito de lock.
@@ -301,4 +301,5 @@ Ao fim de cada etapa, atualizar `docs/STUDY-NOTES.md` (local, fora do git): deci
 - Análise do desafio: concluída e aprovada (decisões registradas nas §4–§11).
 - Etapa 1 — Fundação: concluída e commitada (2026-11-09). MiniStack aprovado.
 - Etapa 2 — Domínio: concluída e commitada (2026-11-09).
-- Próxima: **3 — Núcleo transacional** (não iniciar sem autorização).
+- Etapa 3 — Núcleo transacional: concluída e commitada (2026-11-09).
+- Próxima: **4 — API HTTP** (não iniciar sem autorização).
