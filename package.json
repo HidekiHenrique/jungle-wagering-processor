@@ -1,0 +1,43 @@
+{
+  "name": "jungle-wagering-processor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "scripts": {
+    "start": "bun src/main.ts",
+    "dev": "bun --watch src/main.ts",
+    "infra:up": "docker compose up -d --wait postgres sqs && docker compose run --rm sqs-init",
+    "infra:down": "docker compose down",
+    "migration:up": "bun src/shared/infrastructure/database/migrate.ts up",
+    "migration:down": "bun src/shared/infrastructure/database/migrate.ts down",
+    "migration:status": "bun src/shared/infrastructure/database/migrate.ts status",
+    "test": "bun test test/unit",
+    "test:integration": "bun test --max-concurrency=1 test/integration",
+    "typecheck": "tsc --noEmit -p .",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "check": "bun run typecheck && bun run lint && bun run test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "3.1164.0",
+    "@mikro-orm/core": "7.2.8",
+    "@mikro-orm/migrations": "7.2.8",
+    "@mikro-orm/nestjs": "7.1.0",
+    "@mikro-orm/postgresql": "7.2.8",
+    "@nestjs/common": "12.3.3",
+    "@nestjs/core": "12.3.3",
+    "@nestjs/platform-express": "12.3.3",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.6",
+    "@nestjs/testing": "12.3.3",
+    "@types/bun": "1.4.4",
+    "@types/express": "5.0.6",
+    "typescript": "7.0.2"
+  }
+}

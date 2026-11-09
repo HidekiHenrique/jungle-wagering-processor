@@ -1,0 +1,3 @@
+[test]
+# Nest and MikroORM read decorator metadata through the reflect-metadata polyfill.
+preload = ["./test/setup/preload.ts"]
