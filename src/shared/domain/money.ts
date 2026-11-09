@@ -63,6 +63,16 @@ export class Money {
     return new Money(Money.parseMinorUnits(amount), Money.assertCurrency(currency));
   }
 
+  /**
+   * Parses a signed amount produced by our own computations (e.g. a reconciliation difference
+   * or a ledger sum read back from SQL). Never use it for input contracts: those use `from`.
+   */
+  static fromSigned(amount: string, currency: string): Money {
+    const negative = typeof amount === 'string' && amount.startsWith('-');
+    const magnitude = Money.from({ amount: negative ? amount.slice(1) : amount, currency });
+    return negative ? magnitude.negate() : magnitude;
+  }
+
   static zero(currency: string): Money {
     return new Money(0n, Money.assertCurrency(currency));
   }

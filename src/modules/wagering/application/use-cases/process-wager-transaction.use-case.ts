@@ -18,6 +18,7 @@ import {
   type OutboxRepository,
 } from '../../../messaging/application/ports/outbox.repository';
 import { InboxMessage } from '../../../messaging/domain/inbox-message';
+import { WalletNotFoundError } from '../../../wallets/application/errors';
 import {
   LEDGER_REPOSITORY,
   type LedgerRepository,
@@ -38,11 +39,7 @@ import { type SettlementOutcome, settleWager } from '../../domain/settle-wager';
 import { WagerTransaction } from '../../domain/wager-transaction';
 import type { WagerTransactionKind } from '../../domain/wager-transaction-kind';
 import { WagerTransactionStatus } from '../../domain/wager-transaction-status';
-import {
-  ExternalTransactionConflictError,
-  IdempotencyKeyConflictError,
-  WalletNotFoundError,
-} from '../errors';
+import { ExternalTransactionConflictError, IdempotencyKeyConflictError } from '../errors';
 import { hashWagerPayload } from '../payload-hash';
 import { PENDING_REFERENCE_POLICY } from '../pending-reference-policy';
 import {

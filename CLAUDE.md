@@ -302,4 +302,5 @@ Ao fim de cada etapa, atualizar `docs/STUDY-NOTES.md` (local, fora do git): deci
 - Etapa 1 — Fundação: concluída e commitada (2026-11-09). MiniStack aprovado.
 - Etapa 2 — Domínio: concluída e commitada (2026-11-09).
 - Etapa 3 — Núcleo transacional: concluída e commitada (2026-11-09).
-- Próxima: **4 — API HTTP** (não iniciar sem autorização).
+- Etapa 4 — API HTTP: concluída e commitada (2026-11-09).
+- Próxima: **5 — Mensageria** (não iniciar sem autorização).

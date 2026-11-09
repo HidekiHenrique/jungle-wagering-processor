@@ -321,10 +321,63 @@ sequenceDiagram
 - Replay devolve o resultado gravado na própria transação (`status`, `failure_code`, `balance_after`), ou seja, o saldo observado naquele momento.
 - A inbox deduplica a **mensagem**; a proteção **financeira** entre canais (HTTP × SQS) é a unicidade da transação.
 
-## 8. Seções pendentes
+## 8. API HTTP (Etapa 4)
+
+### 8.1 Camadas na prática
+
+| Peça | Responsabilidade | Exemplo |
+|---|---|---|
+| DTO + `ValidationPipe` | forma do JSON (tipos, UUID, campos desconhecidos → 400) | `SubmitWagerTransactionDto` |
+| Controller | ler header/params, chamar o use case, escolher o status HTTP | `WagerTransactionsController` |
+| Use case | orquestrar repositórios, transação e domínio | `ProcessWagerTransactionUseCase` |
+| Domínio | regras (`Money.from`, `WagerTransaction.create`, `settleWager`) | escala, sinal, referência |
+| `HttpErrorFilter` | erro → status + corpo padronizado | `IDEMPOTENCY_KEY_CONFLICT` → 409 |
+
+O DTO valida só a **forma** (`amount` é string); as regras de valor ficam em `Money.from`, e assim são as mesmas para HTTP, SQS e chamadas internas. `forbidNonWhitelisted`: campo desconhecido é erro, não é descartado em silêncio.
+
+### 8.2 Mapeamento de status (consistente em todos os endpoints)
+
+| Situação | Status | Corpo | O provedor deve |
+|---|---|---|---|
+| Transação aplicada agora | 201 | resultado | — |
+| Replay de transação aplicada | 200 | resultado original, `idempotentReplay: true` | — |
+| Aceita, aguardando referência | 202 | `status: PENDING_REFERENCE` | consultar depois |
+| Payload inválido / sem `Idempotency-Key` / cursor inválido | 400 | `error.code` (`INVALID_PAYLOAD`, `INVALID_MONEY`, `INVALID_WAGER_TRANSACTION`, `INVALID_IDEMPOTENCY_KEY`, `INVALID_CURSOR`) | corrigir |
+| Recurso inexistente (consultas) | 404 | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND` | — |
+| Conflito | 409 | `IDEMPOTENCY_KEY_CONFLICT`, `EXTERNAL_TRANSACTION_CONFLICT`, `WALLET_ALREADY_EXISTS` | não reenviar esse par key/payload |
+| Rejeição de negócio | 422 | resultado com `failureCode`; reenvio devolve o mesmo 422 | desistir ou mandar nova transação |
+| Falha transitória (lock timeout, deadlock, conexão) | 503 + `Retry-After: 1` | `SERVICE_UNAVAILABLE` | **reenviar a mesma requisição** |
+| Bug | 500 | `INTERNAL_ERROR` | — |
+
+Corpo de erro: `{ "error": { "code", "message", "details?" }, "correlationId" }`.
+
+Decisões:
+- `WALLET_NOT_FOUND` num **POST** de transação é rejeição de negócio (422, sem `transactionId`, não persistida); num **GET** é 404.
+- `FAILED` (replay de falha permanente já registrada) responde 422 com `PROCESSING_FAILED`: é terminal, e um 5xx convidaria a reenviar.
+- O 503 só acontece quando nada foi commitado (a transação SQL desfaz tudo); reenviar é seguro. O teste segura o lock da wallet por fora e confirma 503 seguido de 201 no reenvio.
+- Classificação de transitório por SQLSTATE do Postgres (`40001`, `40P01`, `55P03`, `57014`, `08xxx`, …) e erros de rede; será reaproveitada pelo consumer SQS.
+
+### 8.3 Ledger paginado
+
+Paginação por *keyset* na coluna identity `sequence` (mais recentes primeiro): `WHERE sequence < :cursor ORDER BY sequence DESC LIMIT :limit + 1`. A linha extra diz se há próxima página sem `COUNT`. O cursor é `base64url({"v":1,"s":"<sequence>"})`: opaco para o cliente e versionado. É estável sob inserções concorrentes, porque entradas novas recebem sequências maiores e nunca deslocam páginas antigas. `limit` padrão 50, máximo 200.
+
+### 8.4 Reconciliação
+
+Uma única instrução SQL lê `wallets.balance` e soma o ledger: um snapshot só, então uma movimentação concorrente não fabrica divergência falsa. A divergência é logada (`warn`) e sinalizada (`consistent: false`, `difference = stored − calculated`); **nunca** corrigida. A métrica de divergências entra na Etapa 7.
+
+### 8.5 Autenticação (decisão A16: não implementada)
+
+Ponto de extensão: `ProviderIdentityPort` (application) + `ProviderAuthGuard` (presentation) em todos os endpoints de provedor; a implementação atual (`AnonymousProviderIdentity`) aceita tudo.
+
+Desenho com IdP externo (Keycloak):
+1. Um *client* OIDC por provedor, fluxo **client credentials**; o provedor obtém um access token (JWT) e o envia em `Authorization: Bearer`.
+2. Uma implementação `KeycloakProviderIdentity` valida assinatura (JWKS do realm, com cache), `iss`, `aud` e `exp`, e extrai o provedor de um claim (`azp`/`client_id`).
+3. O guard rejeita token ausente ou inválido (401), e o controller exige `body.providerId === provider autenticado` (403), impedindo um provedor de operar em nome de outro.
+4. Health continua aberto; mensagens SQS são canal interno confiável, mas o `providerId` da mensagem passa pelas mesmas validações de domínio.
+
+## 9. Seções pendentes
 
 - Modelo de domínio e Money *(Etapa 2)*
-- API HTTP, mapeamento de erros, autenticação *(Etapa 4)*
 - Inbox, outbox, mensageria e shutdown *(Etapa 5)*
 - Referências pendentes *(Etapa 6)*
 - Métricas, health e recuperação distribuída *(Etapa 7)*

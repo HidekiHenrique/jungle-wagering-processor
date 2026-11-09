@@ -87,6 +87,14 @@ describe('Money arithmetic', () => {
   });
 });
 
+describe('Money.fromSigned', () => {
+  it('parses internal signed amounts', () => {
+    expect(Money.fromSigned('-5.25', 'BRL').amount).toBe('-5.25');
+    expect(Money.fromSigned('5.25', 'BRL').amount).toBe('5.25');
+    expect(() => Money.fromSigned('--1', 'BRL')).toThrow(InvalidMoneyError);
+  });
+});
+
 describe('Money serialization', () => {
   it('serializes to the wire contract', () => {
     expect(JSON.stringify({ money: brl('25') })).toBe('{"money":{"amount":"25.00","currency":"BRL"}}');

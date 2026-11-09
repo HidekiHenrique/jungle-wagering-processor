@@ -4,7 +4,7 @@ Solução do [desafio backend da Jungle Gaming](docs/CHALLENGE.md): serviço fin
 
 Decisões técnicas: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-> Em desenvolvimento por etapas. Concluídas: **1 — Fundação**, **2 — Domínio**, **3 — Núcleo transacional**.
+> Em desenvolvimento por etapas. Concluídas: **1 — Fundação**, **2 — Domínio**, **3 — Núcleo transacional**, **4 — API HTTP**.
 
 ## Stack
 
@@ -66,6 +66,41 @@ bun run start   # ou: bun run dev (reload ao salvar)
 ```
 
 Logs saem em JSON, uma linha por evento. Toda resposta HTTP traz `X-Correlation-Id`.
+
+## Endpoints
+
+| Método | Rota | Descrição |
+|---|---|---|
+| `POST` | `/wallets` | cria wallet (saldo inicial > 0 gera transação OPENING) |
+| `GET` | `/wallets/:walletId` | consulta wallet |
+| `GET` | `/wallets/:walletId/ledger?cursor=&limit=` | lançamentos, mais recentes primeiro (cursor opaco) |
+| `POST` | `/wallets/:walletId/reconciliation` | compara saldo com o ledger (nunca corrige) |
+| `POST` | `/wagering/transactions` | submete BET/WIN/LOSS/REFUND/ROLLBACK (header `Idempotency-Key` obrigatório) |
+| `GET` | `/wagering/transactions/:transactionId` | consulta por id interno |
+| `GET` | `/providers/:providerId/wagering/transactions/:externalTransactionId` | consulta por id do provedor |
+
+Status por resultado: 201 aplicada · 200 replay · 202 aguardando referência · 400 inválida · 404 inexistente · 409 conflito de idempotência · 422 rejeição de negócio (`failureCode`) · 503 transitório (`Retry-After`, reenviar). Detalhes em [ARCHITECTURE.md §8](ARCHITECTURE.md).
+
+### Exemplos
+
+```bash
+# criar wallet
+curl -X POST localhost:3000/wallets -H 'content-type: application/json' \
+  -d '{"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","initialBalance":{"amount":"1000.00","currency":"BRL"}}'
+# → 201 {"id":"…","playerId":"…","balance":{"amount":"1000.00","currency":"BRL"},"version":1}
+
+# apostar (reenviar a mesma requisição devolve 200 com "idempotentReplay": true)
+curl -X POST localhost:3000/wagering/transactions -H 'content-type: application/json' \
+  -H 'Idempotency-Key: provider-a:transaction-123' \
+  -d '{"providerId":"provider-a","externalTransactionId":"transaction-123","playerId":"<playerId>",
+       "walletId":"<walletId>","roundId":"round-987","gameId":"fortune-chimp","kind":"BET",
+       "money":{"amount":"25.00","currency":"BRL"}}'
+# → 201 {"transactionId":"…","status":"PROCESSED","balance":{"amount":"975.00","currency":"BRL"},"idempotentReplay":false}
+
+# ledger e reconciliação
+curl 'localhost:3000/wallets/<walletId>/ledger?limit=50'
+curl -X POST localhost:3000/wallets/<walletId>/reconciliation
+```
 
 ## Testes e qualidade
 

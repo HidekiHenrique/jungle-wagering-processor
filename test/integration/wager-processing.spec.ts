@@ -3,11 +3,11 @@ import { OUTBOX_REPOSITORY } from '../../src/modules/messaging/application/ports
 import {
   ExternalTransactionConflictError,
   IdempotencyKeyConflictError,
-  WalletNotFoundError,
 } from '../../src/modules/wagering/application/errors';
 import { FailureCode } from '../../src/modules/wagering/domain/failure-code';
 import { InvalidWagerTransactionError } from '../../src/modules/wagering/domain/wager-transaction';
 import { WagerTransactionStatus as Status } from '../../src/modules/wagering/domain/wager-transaction-status';
+import { WalletNotFoundError } from '../../src/modules/wallets/application/errors';
 import { WalletAlreadyExistsError } from '../../src/modules/wallets/application/ports/wallet.repository';
 import { InvalidMoneyError } from '../../src/shared/domain/money';
 import { createTestApp, ledgerInvariant, type TestApp, uuid, wagerCommand } from './support/test-app';
