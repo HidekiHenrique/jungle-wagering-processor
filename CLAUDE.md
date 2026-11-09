@@ -158,7 +158,7 @@ Validação de wallet:
 
 ### Referências pendentes
 
-Worker agendado; backoff `2^n` s com teto de 5 min; até 10 tentativas (~30 min), configurável. Esgotado → REJECTED `REFERENCE_NOT_FOUND` + `WagerTransactionRejected`.
+Worker agendado; backoff base 2 s, teto 5 min, até 10 tentativas (~18,5 min, ver ARCHITECTURE §10.3), configurável; dependentes da mesma wallet são acordados quando a referência termina. Esgotado → REJECTED `REFERENCE_NOT_FOUND` + `WagerTransactionRejected`.
 
 ## 7. Persistência e concorrência (decidido)
 
@@ -304,4 +304,5 @@ Ao fim de cada etapa, atualizar `docs/STUDY-NOTES.md` (local, fora do git): deci
 - Etapa 3 — Núcleo transacional: concluída e commitada (2026-11-09).
 - Etapa 4 — API HTTP: concluída e commitada (2026-11-09).
 - Etapa 5 — Mensageria: concluída e commitada (2026-11-09).
-- Próxima: **6 — Referências pendentes** (não iniciar sem autorização).
+- Etapa 6 — Referências pendentes: concluída e commitada (2026-11-09).
+- Próxima: **7 — Observabilidade e recuperação distribuída** (não iniciar sem autorização).

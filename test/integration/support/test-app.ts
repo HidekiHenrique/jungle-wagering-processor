@@ -13,6 +13,7 @@ export interface TestApp {
   openWallet: OpenWalletUseCase;
   processWager: ProcessWagerTransactionUseCase;
   sql<T = Record<string, unknown>>(query: string, params?: unknown[]): Promise<T[]>;
+  get<T>(token: unknown): T;
   close(): Promise<void>;
 }
 
@@ -39,6 +40,7 @@ export async function createTestApp(
     openWallet: moduleRef.get(OpenWalletUseCase),
     processWager: moduleRef.get(ProcessWagerTransactionUseCase),
     sql: (query, params = []) => orm.em.fork().getConnection().execute(query, params) as never,
+    get: <T>(token: unknown) => moduleRef.get(token as never) as T,
     close: () => moduleRef.close(),
   };
 }

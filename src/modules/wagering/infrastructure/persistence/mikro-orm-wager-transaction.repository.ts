@@ -1,3 +1,4 @@
+import { LockMode } from '@mikro-orm/core';
 import { EntityManager } from '@mikro-orm/postgresql';
 import { Injectable } from '@nestjs/common';
 import type { WagerTransactionRepository } from '../../application/ports/wager-transaction.repository';
@@ -88,6 +89,43 @@ export class MikroOrmWagerTransactionRepository implements WagerTransactionRepos
       kind: { $in: [WagerTransactionKind.Refund, WagerTransactionKind.Rollback] },
     });
     return count > 0;
+  }
+
+  async wakeDependents(settled: WagerTransaction, now: Date): Promise<number> {
+    return this.em.nativeUpdate(
+      WagerTransactionRecord,
+      {
+        walletId: settled.walletId,
+        providerId: settled.providerId,
+        referenceExternalTransactionId: settled.externalTransactionId,
+        status: WagerTransactionStatus.PendingReference,
+        nextReferenceCheckAt: { $gt: now },
+      },
+      { nextReferenceCheckAt: now },
+    );
+  }
+
+  async findDuePendingReferences(now: Date, limit: number): Promise<{ id: string; walletId: string }[]> {
+    const records = await this.em.find(
+      WagerTransactionRecord,
+      { status: WagerTransactionStatus.PendingReference, nextReferenceCheckAt: { $lte: now } },
+      {
+        fields: ['id', 'walletId'],
+        orderBy: { nextReferenceCheckAt: 'asc' },
+        limit,
+        disableIdentityMap: true,
+      },
+    );
+    return records.map((r) => ({ id: r.id, walletId: r.walletId }));
+  }
+
+  async claimPendingReference(id: string, now: Date): Promise<WagerTransaction | undefined> {
+    const record = await this.em.findOne(
+      WagerTransactionRecord,
+      { id, status: WagerTransactionStatus.PendingReference, nextReferenceCheckAt: { $lte: now } },
+      { lockMode: LockMode.PESSIMISTIC_PARTIAL_WRITE, disableIdentityMap: true },
+    );
+    return record ? WagerTransactionMapper.toDomain(record) : undefined;
   }
 
   private async findOne(where: Partial<WagerTransactionRecord>): Promise<WagerTransaction | undefined> {

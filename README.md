@@ -4,7 +4,7 @@ Solução do [desafio backend da Jungle Gaming](docs/CHALLENGE.md): serviço fin
 
 Decisões técnicas: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-> Em desenvolvimento por etapas. Concluídas: **1 — Fundação**, **2 — Domínio**, **3 — Núcleo transacional**, **4 — API HTTP**, **5 — Mensageria**.
+> Em desenvolvimento por etapas. Concluídas: **1 — Fundação**, **2 — Domínio**, **3 — Núcleo transacional**, **4 — API HTTP**, **5 — Mensageria**, **6 — Referências pendentes**.
 
 ## Stack
 
@@ -41,7 +41,7 @@ cp .env.example .env      # valores padrão já funcionam com o docker-compose
 | `SQS_WAGER_DLQ` | `wager-transactions-dlq.fifo` | dead letter queue |
 | `SQS_EVENTS_QUEUE` | `wallet-events.fifo` | destino dos eventos da outbox |
 
-Opcionais (com padrão): `SQS_WAIT_TIME_SECONDS` (10), `SQS_RETRY_BASE_DELAY_SECONDS` (1), `SQS_RETRY_MAX_DELAY_SECONDS` (60), `SQS_CONSUMER_ENABLED` (true), `OUTBOX_RELAY_ENABLED` (true), `OUTBOX_POLL_INTERVAL_MS` (500), `OUTBOX_BATCH_SIZE` (50), `SHUTDOWN_TIMEOUT_MS` (20000, deve ser maior que o long poll).
+Opcionais (com padrão): `SQS_WAIT_TIME_SECONDS` (10), `SQS_RETRY_BASE_DELAY_SECONDS` (1), `SQS_RETRY_MAX_DELAY_SECONDS` (60), `SQS_CONSUMER_ENABLED` (true), `OUTBOX_RELAY_ENABLED` (true), `OUTBOX_POLL_INTERVAL_MS` (500), `OUTBOX_BATCH_SIZE` (50), `PENDING_REFERENCE_WORKER_ENABLED` (true), `PENDING_REFERENCE_POLL_INTERVAL_MS` (1000), `PENDING_REFERENCE_BATCH_SIZE` (50), `SHUTDOWN_TIMEOUT_MS` (20000, deve ser maior que o long poll).
 
 Testes usam `.env.test`: banco `wagering_test` e workers desligados (cada teste de mensageria cria filas próprias e liga o que precisa).
 

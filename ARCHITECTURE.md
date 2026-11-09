@@ -430,9 +430,46 @@ Cada passada, numa transação: `SELECT … FOR UPDATE SKIP LOCKED` (lote penden
 
 Não existe exactly-once entre Postgres e SQS. O que o sistema garante: **efeito financeiro exatamente uma vez** (constraints e inbox) e **eventos ao menos uma vez**, com identificador estável para deduplicar.
 
-## 10. Seções pendentes
+## 10. Referências fora de ordem (Etapa 6)
+
+### 10.1 Fluxo
+
+```mermaid
+sequenceDiagram
+  participant P as Provedor
+  participant U as ProcessWagerTransaction
+  participant DB as PostgreSQL
+  participant W as PendingReferenceWorker
+  P->>U: ROLLBACK (ref = bet-1)
+  U->>DB: PENDING_REFERENCE, attempts=1, next_check = now+2s
+  U-->>P: 202
+  P->>U: BET bet-1
+  U->>DB: PROCESSED + acorda dependentes (next_check = now)
+  U-->>P: 201
+  loop a cada 1 s, em todas as instâncias
+    W->>DB: candidatos vencidos (sem lock)
+    W->>DB: BEGIN; lock wallet; lock transação SKIP LOCKED
+    W->>W: WagerSettlementService.settle (mesmas regras da 1ª tentativa)
+    W->>DB: PROCESSED / REJECTED / reagenda; COMMIT
+  end
+```
+
+### 10.2 Decisões
+
+- **Mesmo caminho de liquidação**: `WagerSettlementService` é usado pela primeira tentativa e pelos retries. As regras, as escritas e os eventos são idênticos; o retry não reimplementa nada.
+- **Ordem de locks igual em todo lugar**: wallet primeiro (`FOR NO KEY UPDATE`), depois a linha da transação (`FOR UPDATE SKIP LOCKED`, conferindo de novo que ela ainda está pendente e vencida). Como o caminho normal também trava a wallet antes de tocar transações pendentes, não há ciclo de espera, ou seja, não há deadlock. `SKIP LOCKED` faz dois workers nunca liquidarem a mesma transação; a nova checagem de status cobre a corrida entre ler o candidato e travá-lo.
+- **Acordar dependentes**: quando uma transação termina, as `PENDING_REFERENCE` da **mesma wallet** que apontam para ela ficam vencidas na hora (`next_reference_check_at = now`), no mesmo commit e sob o mesmo lock. A latência deixa de depender do backoff; o backoff fica para referências que realmente não chegaram.
+- **Evento `WagerTransactionPendingReference` uma vez só**, quando a transação é estacionada pela primeira vez; os retries não geram eventos. Ao esgotar as tentativas: `REJECTED` + `WagerTransactionRejected`.
+- **Erro não transitório no retry** (bug): a transação vira `FAILED` (`PROCESSING_FAILED`), auditável, em vez de falhar a cada ciclo para sempre. Erro transitório: fica como está e tenta de novo no próximo ciclo. A classificação usa o port `TransientErrorClassifier` (a regra depende do driver; a camada application não importa infraestrutura, e o teste de arquitetura pegou essa violação durante a implementação).
+
+### 10.3 Limite de tentativas
+
+Padrão: base 2 s, teto 300 s, 10 tentativas (`PENDING_REFERENCE_*`). Verificações em ≈ 2 s, 6 s, 14 s, 30 s, 62 s, 2 min, 4 min, 8,5 min, 13,5 min e 18,5 min; na última, `REJECTED` com `REFERENCE_NOT_FOUND`.
+
+Justificativa: a desordem normal (paralelismo da fila, reenvio do provedor) se resolve em milissegundos ou segundos, e o wake-up nem espera o backoff. As tentativas seguintes cobrem provedores que reenviam com o próprio backoff de alguns minutos. Depois de ~18 min, a referência muito provavelmente nunca vai chegar, e manter a transação pendente só esconde o problema; a rejeição explícita leva o provedor a reconciliar. Os valores são configuráveis por ambiente.
+
+## 11. Seções pendentes
 
 - Modelo de domínio e Money *(Etapa 2)*
-- Referências pendentes *(Etapa 6)*
 - Métricas, health e recuperação distribuída *(Etapa 7)*
 - Failure codes, trade-offs, ambiguidades resolvidas e limitações *(contínuo)*

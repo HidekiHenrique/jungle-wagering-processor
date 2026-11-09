@@ -5,47 +5,29 @@ import {
   TRANSACTION_RUNNER,
   type TransactionRunner,
 } from '../../../../shared/application/transaction-runner.port';
-import type { BackoffPolicy } from '../../../../shared/domain/backoff-policy';
 import { InvariantViolationError } from '../../../../shared/domain/domain-error';
-import type { EventContext, IntegrationEvent } from '../../../../shared/domain/integration-event';
 import { Money, type MoneyProps } from '../../../../shared/domain/money';
 import {
   INBOX_REPOSITORY,
   type InboxRepository,
 } from '../../../messaging/application/ports/inbox.repository';
-import {
-  OUTBOX_REPOSITORY,
-  type OutboxRepository,
-} from '../../../messaging/application/ports/outbox.repository';
 import { InboxMessage } from '../../../messaging/domain/inbox-message';
 import { WalletNotFoundError } from '../../../wallets/application/errors';
-import {
-  LEDGER_REPOSITORY,
-  type LedgerRepository,
-} from '../../../wallets/application/ports/ledger.repository';
 import {
   WALLET_REPOSITORY,
   type WalletRepository,
 } from '../../../wallets/application/ports/wallet.repository';
-import { WalletBalanceChanged } from '../../../wallets/domain/events/wallet-balance-changed.event';
-import type { Wallet } from '../../../wallets/domain/wallet';
-import {
-  WagerTransactionPendingReference,
-  WagerTransactionProcessed,
-  WagerTransactionRejected,
-} from '../../domain/events/wager-transaction-events';
 import type { FailureCode } from '../../domain/failure-code';
-import { type SettlementOutcome, settleWager } from '../../domain/settle-wager';
 import { WagerTransaction } from '../../domain/wager-transaction';
 import type { WagerTransactionKind } from '../../domain/wager-transaction-kind';
 import { WagerTransactionStatus } from '../../domain/wager-transaction-status';
 import { ExternalTransactionConflictError, IdempotencyKeyConflictError } from '../errors';
 import { hashWagerPayload } from '../payload-hash';
-import { PENDING_REFERENCE_POLICY } from '../pending-reference-policy';
 import {
   WAGER_TRANSACTION_REPOSITORY,
   type WagerTransactionRepository,
 } from '../ports/wager-transaction.repository';
+import { WagerSettlementService } from '../wager-settlement.service';
 
 /** Input shared by the HTTP controller and the SQS consumer. */
 export interface ProcessWagerTransactionCommand {
@@ -81,10 +63,8 @@ export interface WagerTransactionResult {
  *   2. insert transaction as PENDING         → duplicate?   replay or 409 (waits on the unique
  *                                              index while a concurrent duplicate is in flight)
  *   3. lock the wallet row (FOR NO KEY UPDATE)
- *   4. load reference + reversal status
- *   5. settleWager (pure domain rules)
- *   6. persist wallet, ledger entry, outcome
- *   7. write integration events to the outbox
+ *   4-7. WagerSettlementService: reference, settleWager (pure rules), wallet + ledger + outcome,
+ *        outbox events (the same code path the pending-reference retries use)
  * Any error rolls everything back. Nothing leaves the process before COMMIT.
  */
 @Injectable()
@@ -93,12 +73,10 @@ export class ProcessWagerTransactionUseCase {
     @Inject(TRANSACTION_RUNNER) private readonly transactions: TransactionRunner,
     @Inject(WAGER_TRANSACTION_REPOSITORY) private readonly wagers: WagerTransactionRepository,
     @Inject(WALLET_REPOSITORY) private readonly wallets: WalletRepository,
-    @Inject(LEDGER_REPOSITORY) private readonly ledger: LedgerRepository,
-    @Inject(OUTBOX_REPOSITORY) private readonly outbox: OutboxRepository,
     @Inject(INBOX_REPOSITORY) private readonly inbox: InboxRepository,
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
-    @Inject(PENDING_REFERENCE_POLICY) private readonly pendingReferencePolicy: BackoffPolicy,
+    private readonly settlement: WagerSettlementService,
   ) {}
 
   async execute(command: ProcessWagerTransactionCommand): Promise<WagerTransactionResult> {
@@ -162,63 +140,12 @@ export class ProcessWagerTransactionUseCase {
   ): Promise<WagerTransactionResult> {
     const wallet = await this.wallets.lockById(transaction.walletId);
     if (!wallet) throw new WalletNotFoundError(transaction.walletId);
-
-    const reference = transaction.referenceExternalTransactionId
-      ? await this.wagers.findByExternalId(transaction.providerId, transaction.referenceExternalTransactionId)
-      : undefined;
-    const referenceAlreadyReversed =
-      reference !== undefined &&
-      transaction.isReversal() &&
-      (await this.wagers.hasProcessedReversal(reference.id));
-
-    const versionBefore = wallet.version;
-    const outcome = settleWager({
-      transaction,
-      wallet,
-      reference,
-      referenceAlreadyReversed,
-      ledgerEntryId: this.ids.next(),
-      pendingReferencePolicy: this.pendingReferencePolicy,
-      at: now,
-    });
-
-    const ledgerEntry = outcome.status === WagerTransactionStatus.Processed ? outcome.ledgerEntry : undefined;
-    if (ledgerEntry) {
-      await this.wallets.updateBalance(wallet, versionBefore);
-      await this.ledger.append(ledgerEntry);
-    }
-    await this.wagers.updateOutcome(transaction);
-    await this.outbox.add(this.eventsFor(transaction, wallet, outcome, command, now));
-
-    return toResult(transaction, false);
-  }
-
-  private eventsFor(
-    transaction: WagerTransaction,
-    wallet: Wallet,
-    outcome: SettlementOutcome,
-    command: ProcessWagerTransactionCommand,
-    now: Date,
-  ): IntegrationEvent<unknown>[] {
-    const ctx = (): EventContext => ({
-      eventId: this.ids.next(),
+    await this.settlement.settle(transaction, wallet, {
       correlationId: command.correlationId,
       causationId: command.inbox?.messageId,
-      occurredAt: now,
+      now,
     });
-    switch (outcome.status) {
-      case WagerTransactionStatus.Processed:
-        return outcome.ledgerEntry
-          ? [
-              WagerTransactionProcessed.from(transaction, ctx()),
-              WalletBalanceChanged.from(wallet, outcome.ledgerEntry, ctx()),
-            ]
-          : [WagerTransactionProcessed.from(transaction, ctx())];
-      case WagerTransactionStatus.Rejected:
-        return [WagerTransactionRejected.from(transaction, ctx())];
-      case WagerTransactionStatus.PendingReference:
-        return [WagerTransactionPendingReference.from(transaction, ctx())];
-    }
+    return toResult(transaction, false);
   }
 }
 

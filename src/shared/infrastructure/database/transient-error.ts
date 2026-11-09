@@ -1,5 +1,6 @@
 import { ConnectionException, DeadlockException, LockWaitTimeoutException } from '@mikro-orm/core';
 import { ConcurrentModificationError } from '../../application/application-error';
+import type { TransientErrorClassifier } from '../../application/transient-error-classifier.port';
 
 /**
  * PostgreSQL SQLSTATEs that mean "try again later", not "your request is wrong".
@@ -45,3 +46,7 @@ export function isTransientInfrastructureError(error: unknown): boolean {
     /timeout exceeded when trying to connect|connection terminated/i.test(message)
   );
 }
+
+export const postgresTransientErrorClassifier: TransientErrorClassifier = {
+  isTransient: isTransientInfrastructureError,
+};

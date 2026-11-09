@@ -41,6 +41,9 @@ export interface AppConfig {
     readonly outboxRelayEnabled: boolean;
     readonly outboxPollIntervalMs: number;
     readonly outboxBatchSize: number;
+    readonly pendingReferenceEnabled: boolean;
+    readonly pendingReferencePollIntervalMs: number;
+    readonly pendingReferenceBatchSize: number;
     /** Max time to finish in-flight work on SIGTERM before giving messages back. */
     readonly shutdownTimeoutMs: number;
   };
@@ -140,6 +143,9 @@ export function loadConfig(env: Env): AppConfig {
       outboxRelayEnabled: boolOr('OUTBOX_RELAY_ENABLED', true),
       outboxPollIntervalMs: intOr('OUTBOX_POLL_INTERVAL_MS', 500, 10, 60_000),
       outboxBatchSize: intOr('OUTBOX_BATCH_SIZE', 50, 1, 500),
+      pendingReferenceEnabled: boolOr('PENDING_REFERENCE_WORKER_ENABLED', true),
+      pendingReferencePollIntervalMs: intOr('PENDING_REFERENCE_POLL_INTERVAL_MS', 1_000, 10, 60_000),
+      pendingReferenceBatchSize: intOr('PENDING_REFERENCE_BATCH_SIZE', 50, 1, 500),
       shutdownTimeoutMs: intOr('SHUTDOWN_TIMEOUT_MS', 20_000, 100, 120_000),
     },
   };
